@@ -58,6 +58,44 @@ import {
   setBusinessPayOrigin,
   buildBotLinkKey,
 } from './businessPayService';
+import {
+  getAutoOrderDashboardSummary,
+  updateAutoOrderSettings,
+  updateGuildFlowSettings,
+  upsertProductMapping,
+  deleteProductMapping,
+  createAutoOrder,
+  createGuildServiceOrder,
+  processGatewayPaymentForAutoOrders,
+  executeAutoOrderDelivery,
+  adminApproveOrderPayment,
+  adminRejectOrCancelOrder,
+  refreshFFGloryBalance,
+  refreshFFGloryPricing,
+  ensureFreshFFGloryData,
+  resolveFFGloryCredentials,
+  getAutoOrderState,
+  saveAutoOrderState,
+  appendApiError,
+  findOrderByPortalToken,
+  submitGuildConfiguration,
+  fetchOrderLiveGlory,
+  sendPhase5GuildConfigCard,
+  buildOrderPortalUrl,
+  resolveStoredReceiptFilePath,
+  registerPublicPortalBaseUrl,
+  type GuildBotQuantity,
+} from './autoOrderService';
+import { ffgloryClient, FFGloryApiError } from './ffgloryClient';
+import {
+  AuthenticatedPrincipal,
+  isAuthorizedAdminEmail,
+  issueSessionToken,
+  requireAuthenticatedUser,
+  requireAuthorizedAdmin,
+  verifyFirebaseIdToken,
+} from './authService';
+import { subscriptionService, type SubscriptionPlanId } from './subscriptionService';
 
 dotenv.config();
 
@@ -77,17 +115,306 @@ async function startServer() {
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
+    try {
+      const fwdProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+      const fwdHost = String(req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+      if (fwdHost) {
+        registerPublicPortalBaseUrl(`${fwdProto || 'https'}://${fwdHost}`);
+      }
+    } catch {}
     next();
   });
 
+  const TIER_RANK: Record<SubscriptionPlanId, number> = {
+    mini: 0,
+    pro: 1,
+    business: 2,
+  };
+
+  const resolveScopedUserId = (req: Request, defaultFallback = 'primary'): string => {
+    const rawId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
+    const requested =
+      typeof rawId === 'string' && rawId.trim() && rawId !== 'null' && rawId !== 'undefined'
+        ? rawId.trim()
+        : '';
+    const principal = (req as any).authPrincipal as AuthenticatedPrincipal | undefined;
+
+    if (!principal) {
+      return requested || defaultFallback;
+    }
+
+    if (principal.isAdmin) {
+      return requested || principal.uid || defaultFallback;
+    }
+
+    const emailKey = `user_${principal.email.toLowerCase().replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    const allowedIds = new Set([
+      principal.uid,
+      `${principal.uid}__business`,
+      emailKey,
+      `${emailKey}__business`,
+    ]);
+    if (requested && allowedIds.has(requested)) {
+      return requested;
+    }
+    return defaultFallback.endsWith('__business') ? `${principal.uid}__business` : principal.uid;
+  };
+
   // Multi-Tenant Isolation Helper: Resolves customer's private BotEngine based on authenticated UID
   const getEngineForReq = (req: Request) => {
-    const rawId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
-    const cleanId = typeof rawId === 'string' && rawId.trim() && rawId !== 'null' && rawId !== 'undefined'
-      ? rawId.trim()
-      : 'primary';
-    return getBotEngine(cleanId);
+    return getBotEngine(resolveScopedUserId(req, 'primary'));
   };
+
+  const getEffectiveCallerTier = (req: Request): SubscriptionPlanId => {
+    const principal = (req as any).authPrincipal as AuthenticatedPrincipal | undefined;
+    if (!principal) return 'mini';
+    return subscriptionService.getEffectiveTier(principal.uid, principal.email, principal.isAdmin);
+  };
+
+  const requireBusinessTier = (req: Request, res: Response, next: () => void) => {
+    const principal = (req as any).authPrincipal as AuthenticatedPrincipal | undefined;
+    if (!principal) {
+      return res.status(401).json({ success: false, message: 'Authentication required.' });
+    }
+    const tier = subscriptionService.getEffectiveTier(principal.uid, principal.email, principal.isAdmin);
+    if (tier !== 'business' && !principal.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        code: 'BUSINESS_TIER_REQUIRED',
+        currentPlan: tier,
+        message: 'Active BUSINESS subscription required. Submit manual bank transfer and wait for admin approval.',
+      });
+    }
+    next();
+  };
+
+  // --- AUTHENTICATION SESSION EXCHANGE ---
+  app.post('/api/auth/session', async (req: Request, res: Response) => {
+    try {
+      const { idToken, email, username, uid } = req.body || {};
+
+      if (typeof idToken === 'string' && idToken.trim()) {
+        const verified = await verifyFirebaseIdToken(idToken.trim());
+        if (verified) {
+          adminStore.syncCustomer(verified.uid, verified.email, verified.username);
+          const sessionToken = issueSessionToken({
+            uid: verified.uid,
+            email: verified.email,
+            username: verified.username,
+            firebaseVerified: verified.firebaseVerified,
+          });
+          return res.json({
+            success: true,
+            token: sessionToken,
+            principal: verified,
+            subscription: subscriptionService.getUserSubscriptionView(
+              verified.uid,
+              verified.email,
+              verified.username
+            ).subscription,
+          });
+        }
+        // If Firebase cert fetch fails transiently in isolated network, allow fallback only if email provided
+      }
+
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Valid authenticated email or Firebase ID token is required.',
+        });
+      }
+
+      const safeUid =
+        typeof uid === 'string' && uid.trim() && /^[a-zA-Z0-9_-]{4,128}$/.test(uid.trim())
+          ? uid.trim()
+          : `user_${cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const cleanName = String(username || cleanEmail.split('@')[0] || 'User').trim().slice(0, 64);
+
+      adminStore.syncCustomer(safeUid, cleanEmail, cleanName);
+
+      const sessionToken = issueSessionToken({
+        uid: safeUid,
+        email: cleanEmail,
+        username: cleanName,
+        firebaseVerified: false,
+      });
+
+      const view = subscriptionService.getUserSubscriptionView(safeUid, cleanEmail, cleanName);
+      return res.json({
+        success: true,
+        token: sessionToken,
+        principal: {
+          uid: safeUid,
+          email: cleanEmail,
+          username: cleanName,
+          isAdmin: isAuthorizedAdminEmail(cleanEmail),
+          firebaseVerified: false,
+          provider: 'session',
+        },
+        subscription: view.subscription,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        message: err?.message || 'Failed to establish session token',
+      });
+    }
+  });
+
+  // --- SUBSCRIPTION & MANUAL BANK TRANSFER PAYMENT WORKFLOW ---
+  app.get('/api/subscriptions/config', (_req: Request, res: Response) => {
+    try {
+      res.json({
+        success: true,
+        data: subscriptionService.getPublicBillingConfig(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load billing config' });
+    }
+  });
+
+  app.get('/api/subscriptions/me', requireAuthenticatedUser, (req: Request, res: Response) => {
+    try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const view = subscriptionService.getUserSubscriptionView(
+        principal.uid,
+        principal.email,
+        principal.username
+      );
+      res.json({
+        success: true,
+        data: {
+          ...view,
+          isAdmin: principal.isAdmin,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load subscription status' });
+    }
+  });
+
+  app.post('/api/subscriptions/notifications/:id/read', requireAuthenticatedUser, (req: Request, res: Response) => {
+    try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const ok = subscriptionService.markNotificationRead(principal.uid, principal.email, req.params.id);
+      res.json({ success: ok });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to update notification' });
+    }
+  });
+
+  app.post('/api/subscriptions/requests', requireAuthenticatedUser, (req: Request, res: Response) => {
+    try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const { packageId, transactionReference, paymentDate, receiptBase64, notes } = req.body || {};
+      const result = subscriptionService.submitManualPayment({
+        userId: principal.uid,
+        email: principal.email,
+        username: principal.username,
+        packageId,
+        transactionReference,
+        paymentDate,
+        receiptBase64,
+        notes,
+      });
+      return res.status(result.statusCode).json({
+        success: result.success,
+        message: result.message,
+        request: result.request || null,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err?.message || 'Failed to submit manual payment request' });
+    }
+  });
+
+  app.get('/api/subscriptions/receipts/:fileName', requireAuthenticatedUser, (req: Request, res: Response) => {
+    try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const resolved = subscriptionService.resolveReceiptFileForRequest(req.params.fileName, {
+        uid: principal.uid,
+        email: principal.email,
+        isAdmin: principal.isAdmin,
+      });
+      if (!resolved.allowed || !resolved.filePath) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden or receipt file not found.',
+        });
+      }
+      res.setHeader('Content-Type', resolved.mimeType || 'image/png');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      return res.sendFile(resolved.filePath);
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err?.message || 'Failed to load receipt image' });
+    }
+  });
+
+  app.get('/api/subscriptions/admin/overview', requireAuthorizedAdmin, (_req: Request, res: Response) => {
+    try {
+      const overview = subscriptionService.getAdminOverview();
+      res.json({ success: true, data: overview });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load subscription admin overview' });
+    }
+  });
+
+  app.post('/api/subscriptions/admin/requests/:id/review', requireAuthorizedAdmin, (req: Request, res: Response) => {
+    try {
+      const adminEmail = String((req as any).adminEmail || '');
+      const actionRaw = String(req.body?.action || '').trim().toUpperCase();
+      if (actionRaw !== 'APPROVE' && actionRaw !== 'REJECT') {
+        return res.status(400).json({ success: false, message: 'Action must be APPROVE or REJECT.' });
+      }
+      const result = subscriptionService.reviewPaymentRequest({
+        requestId: req.params.id,
+        action: actionRaw as 'APPROVE' | 'REJECT',
+        adminEmail,
+        rejectionReason: req.body?.rejectionReason,
+      });
+      return res.status(result.statusCode).json({
+        success: result.success,
+        message: result.message,
+        request: result.request || null,
+        subscription: result.subscription || null,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err?.message || 'Failed to review payment request' });
+    }
+  });
+
+  app.post('/api/subscriptions/admin/config', requireAuthorizedAdmin, (req: Request, res: Response) => {
+    try {
+      const adminEmail = String((req as any).adminEmail || '');
+      const { bankDetails, packagePricesLkr } = req.body || {};
+      const updated = subscriptionService.adminUpdateConfig({ bankDetails, packagePricesLkr }, adminEmail);
+      res.json({
+        success: true,
+        data: updated,
+        message: 'Bank account details and monthly package prices updated successfully.',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to update billing config' });
+    }
+  });
+
+  app.post('/api/subscriptions/admin/downgrade', requireAuthorizedAdmin, (req: Request, res: Response) => {
+    try {
+      const adminEmail = String((req as any).adminEmail || '');
+      const target = String(req.body?.userIdOrEmail || '').trim();
+      if (!target) {
+        return res.status(400).json({ success: false, message: 'userIdOrEmail is required.' });
+      }
+      const updated = subscriptionService.adminForceExpireOrDowngrade(target, adminEmail);
+      if (!updated) {
+        return res.status(404).json({ success: false, message: 'Subscription record not found.' });
+      }
+      res.json({ success: true, data: updated, message: `Downgraded ${updated.email} to MINI.` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to downgrade user' });
+    }
+  });
 
   // Health check endpoint
   // 24/7 Cloud Keep-Alive Endpoint for UptimeRobot / Cron / Cloudflare Workers
@@ -213,10 +540,15 @@ async function startServer() {
     });
   });
 
-  // Get live Bot State and metrics (isolated per customer)
-  app.get('/api/bot/status', (req: Request, res: Response) => {
+  // Get live Bot State and metrics (isolated per customer, server-enforced subscription tier)
+  app.get('/api/bot/status', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
+      const effectiveTier = getEffectiveCallerTier(req);
+      const currentPlan = (engine.state?.config?.plan || 'mini') as SubscriptionPlanId;
+      if (TIER_RANK[currentPlan] > TIER_RANK[effectiveTier]) {
+        engine.setPlan(effectiveTier);
+      }
       const state = engine.getState();
       res.json({
         success: true,
@@ -228,7 +560,7 @@ async function startServer() {
   });
 
   // Get live runtime logs (isolated per customer)
-  app.get('/api/bot/logs', (req: Request, res: Response) => {
+  app.get('/api/bot/logs', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const logs = engine.getLogs();
@@ -242,11 +574,15 @@ async function startServer() {
   });
 
   // Start Bot instance (isolated per customer)
-  app.post('/api/bot/start', async (req: Request, res: Response) => {
+  app.post('/api/bot/start', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const { phoneNumber } = req.body || {};
       const cleanPhone = phoneNumber ? normalizeWhatsAppNumber(phoneNumber) : undefined;
       const engine = getEngineForReq(req);
+      const effectiveTier = getEffectiveCallerTier(req);
+      if (TIER_RANK[(engine.state?.config?.plan || 'mini') as SubscriptionPlanId] > TIER_RANK[effectiveTier]) {
+        engine.setPlan(effectiveTier);
+      }
       const result = await engine.start(cleanPhone);
       res.json(result);
     } catch (err: any) {
@@ -255,7 +591,7 @@ async function startServer() {
   });
 
   // Stop Bot instance (isolated per customer)
-  app.post('/api/bot/stop', async (req: Request, res: Response) => {
+  app.post('/api/bot/stop', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const result = await engine.stop();
@@ -266,7 +602,7 @@ async function startServer() {
   });
 
   // Restart Bot instance (isolated per customer)
-  app.post('/api/bot/restart', async (req: Request, res: Response) => {
+  app.post('/api/bot/restart', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const result = await engine.restart();
@@ -277,7 +613,7 @@ async function startServer() {
   });
 
   // Request WhatsApp Pairing Code for phone number (isolated per customer)
-  app.post(['/api/bot/pair/code', '/api/bot/pair'], async (req: Request, res: Response) => {
+  app.post(['/api/bot/pair/code', '/api/bot/pair'], requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const { phoneNumber } = req.body;
       if (!phoneNumber) {
@@ -301,7 +637,7 @@ async function startServer() {
   });
 
   // Request QR Code pairing mode (isolated per customer)
-  app.post('/api/bot/pair/qr', async (req: Request, res: Response) => {
+  app.post('/api/bot/pair/qr', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const { forceNew } = req.body || {};
       const engine = getEngineForReq(req);
@@ -313,7 +649,7 @@ async function startServer() {
   });
 
   // Clear Session & Credentials for clean re-pairing (isolated per customer)
-  app.post('/api/bot/clear-session', async (req: Request, res: Response) => {
+  app.post('/api/bot/clear-session', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const result = await engine.clearSession();
@@ -323,13 +659,25 @@ async function startServer() {
     }
   });
 
-  // Set Bot Plan (MINI, PRO, or BUSINESS - isolated per customer)
-  app.post('/api/bot/plan', (req: Request, res: Response) => {
+  // Set Bot Plan — STRICTLY ENFORCED against server-side admin-approved subscription!
+  app.post('/api/bot/plan', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
-      const { plan } = req.body;
+      const { plan } = req.body || {};
       if (plan !== 'mini' && plan !== 'pro' && plan !== 'business') {
         return res.status(400).json({ success: false, message: 'Invalid plan. Allowed: "mini", "pro", or "business".' });
       }
+
+      const effectiveTier = getEffectiveCallerTier(req);
+      if (TIER_RANK[plan as SubscriptionPlanId] > TIER_RANK[effectiveTier]) {
+        return res.status(403).json({
+          success: false,
+          code: 'SUBSCRIPTION_REQUIRED',
+          currentPlan: effectiveTier,
+          requestedPlan: plan,
+          message: `${plan.toUpperCase()} subscription is not active on your account. Submit a manual bank transfer payment and wait for admin approval.`,
+        });
+      }
+
       const engine = getEngineForReq(req);
       const updatedState = engine.setPlan(plan);
       res.json({ success: true, plan, data: updatedState });
@@ -338,57 +686,33 @@ async function startServer() {
     }
   });
 
-  // Secure Purchase Plan with Coin Deduction & Validation (isolated per customer)
-  const PLAN_PRICES: Record<string, number> = {
-    mini: 0,
-    pro: 10,
-    business: 30,
-  };
-
-  app.post('/api/bot/purchase-plan', (req: Request, res: Response) => {
+  // Paid packages cannot be self-activated with client coin clicks anymore
+  app.post('/api/bot/purchase-plan', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
-      const { plan, userCoins } = req.body;
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const { plan } = req.body || {};
       if (plan !== 'mini' && plan !== 'pro' && plan !== 'business') {
         return res.status(400).json({ success: false, message: 'Invalid plan. Allowed: "mini", "pro", or "business".' });
       }
 
-      const cost = PLAN_PRICES[plan] ?? 0;
-      const currentCoins = Number(userCoins) || 0;
-
-      if (cost > 0 && currentCoins < cost) {
-        return res.status(400).json({
+      if (plan !== 'mini' && !principal.isAdmin) {
+        return res.status(403).json({
           success: false,
-          message: `Insufficient coins in wallet! ${cost} coins required, but you only have ${currentCoins} coins.`,
-          requiredCoins: cost,
-          currentCoins,
+          code: 'MANUAL_BANK_TRANSFER_REQUIRED',
+          message: 'Paid packages (PRO / BUSINESS) require a manual bank transfer receipt verified and approved by an admin.',
         });
       }
 
-      const remainingCoins = Math.max(0, currentCoins - cost);
       const engine = getEngineForReq(req);
       const updatedState = engine.setPlan(plan);
-
-      res.json({
-        success: true,
-        plan,
-        coinsDeducted: cost,
-        remainingCoins,
-        transaction: {
-          id: `tx-${Date.now()}`,
-          title: `Purchased YASHI HALLS ${plan.toUpperCase()} Plan`,
-          date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          amount: -cost,
-          category: 'purchase',
-        },
-        data: updatedState,
-      });
+      res.json({ success: true, plan, data: updatedState });
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err?.message || 'Failed to process plan purchase' });
+      res.status(500).json({ success: false, message: err?.message || 'Failed to process plan update' });
     }
   });
 
   // Sync WhatsApp Bot Profile Picture to Brand Logo (isolated per customer)
-  app.post('/api/bot/sync-profile-pic', async (req: Request, res: Response) => {
+  app.post('/api/bot/sync-profile-pic', requireAuthenticatedUser, async (req: Request, res: Response) => {
     try {
       const { logoUrl } = req.body || {};
       const engine = getEngineForReq(req);
@@ -400,7 +724,7 @@ async function startServer() {
   });
 
   // Reset Quotas (daily refresh - isolated per customer)
-  app.post('/api/bot/reset-quotas', (req: Request, res: Response) => {
+  app.post('/api/bot/reset-quotas', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const quotas = engine.resetQuotas();
@@ -411,7 +735,7 @@ async function startServer() {
   });
 
   // Get Bot Configuration (isolated per customer)
-  app.get('/api/bot/config', (req: Request, res: Response) => {
+  app.get('/api/bot/config', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
       const config = engine.getState().config;
@@ -421,11 +745,18 @@ async function startServer() {
     }
   });
 
-  // Update Bot Configuration (isolated per customer)
-  app.post('/api/bot/config', (req: Request, res: Response) => {
+  // Update Bot Configuration (isolated per customer; strips client-supplied plan & gates paid flags)
+  app.post('/api/bot/config', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const engine = getEngineForReq(req);
-      const { userId, ...configUpdates } = req.body;
+      const effectiveTier = getEffectiveCallerTier(req);
+      const { userId: _uid, plan: _ignoredPlan, ...configUpdates } = req.body || {};
+
+      if (effectiveTier === 'mini') {
+        configUpdates.antiLink = false;
+        configUpdates.antiSpam = false;
+      }
+
       const updated = engine.updateConfig(configUpdates);
       res.json({ success: true, data: updated });
     } catch (err: any) {
@@ -435,13 +766,15 @@ async function startServer() {
 
   // --- BUSINESS BOT STORE & PRODUCT CATALOG ENDPOINTS ---
   const getBizStoreTenantId = (req: Request) => {
-    const rawId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
-    const cleanId =
-      typeof rawId === 'string' && rawId.trim() && rawId !== 'null' && rawId !== 'undefined'
-        ? rawId.trim()
-        : 'primary__business';
-    return cleanId;
+    return resolveScopedUserId(req, 'primary__business');
   };
+
+  app.use('/api/business-store', (req: Request, res: Response, next) => {
+    if (req.method === 'GET' && req.path.startsWith('/assets/')) {
+      return next();
+    }
+    return requireAuthenticatedUser(req, res, () => requireBusinessTier(req, res, next));
+  });
 
   app.get('/api/business-store', (req: Request, res: Response) => {
     try {
@@ -638,7 +971,7 @@ async function startServer() {
     return `${protoHeader || 'https'}://${hostHeader}`;
   };
 
-  app.post('/api/business/pay/apk/send-whatsapp', async (req: Request, res: Response) => {
+  app.post('/api/business/pay/apk/send-whatsapp', requireAuthenticatedUser, requireBusinessTier, async (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const reqOrigin = extractPublicOrigin(req);
@@ -688,7 +1021,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/business/pay/status', (req: Request, res: Response) => {
+  app.get('/api/business/pay/status', requireAuthenticatedUser, requireBusinessTier, (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const reqOrigin = extractPublicOrigin(req);
@@ -719,7 +1052,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/business/pay/config', (req: Request, res: Response) => {
+  app.post('/api/business/pay/config', requireAuthenticatedUser, requireBusinessTier, (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const {
@@ -747,7 +1080,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/business/pay/rotate-secret', (req: Request, res: Response) => {
+  app.post('/api/business/pay/rotate-secret', requireAuthenticatedUser, requireBusinessTier, (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const updated = rotateBusinessPaySecret(tenantId);
@@ -757,7 +1090,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/business/pay/orders/:id/status', async (req: Request, res: Response) => {
+  app.post('/api/business/pay/orders/:id/status', requireAuthenticatedUser, requireBusinessTier, async (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const status = req.body?.status;
@@ -788,7 +1121,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/business/pay/test', async (req: Request, res: Response) => {
+  app.post('/api/business/pay/test', requireAuthenticatedUser, requireBusinessTier, async (req: Request, res: Response) => {
     try {
       const tenantId = getBizStoreTenantId(req);
       const state = getBusinessPayState(tenantId);
@@ -810,9 +1143,20 @@ async function startServer() {
       const engine = getBotEngine(tenantId);
       await engine.handleIncomingBusinessPayment(result.event, result.matchedOrder);
 
+      // Also feed test payment into Auto Order matching & Guild Phase 5 engine
+      const autoOrderResult = await processGatewayPaymentForAutoOrders(
+        tenantId,
+        result.event,
+        engine.getAutoOrderWhatsAppDispatcher(),
+        {
+          targetOrderId: typeof req.body?.orderId === 'string' ? req.body.orderId : undefined,
+          verifiedBy: 'TEST_SIMULATOR',
+        }
+      );
+
       res.json({
         success: true,
-        data: result,
+        data: { ...result, autoOrderResult },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || 'Test webhook failed' });
@@ -891,9 +1235,22 @@ async function startServer() {
         simOperator: req.body?.simOperator,
       });
 
+      let autoOrderOutcome: string | null = null;
+      let autoOrderMatchedId: string | null = null;
+
       if (!result.duplicate && result.event.status !== 'ignored') {
         const engine = getBotEngine(state.tenantId);
         await engine.handleIncomingBusinessPayment(result.event, result.matchedOrder);
+
+        // Process payment through Auto Order Matching & FFGlory Automatic Delivery
+        const aoRes = await processGatewayPaymentForAutoOrders(
+          state.tenantId,
+          result.event,
+          engine.getAutoOrderWhatsAppDispatcher(),
+          { verifiedBy: 'AUTO_GATEWAY' }
+        );
+        autoOrderOutcome = aoRes.outcome;
+        autoOrderMatchedId = aoRes.order?.id || null;
       }
 
       return res.json({
@@ -903,10 +1260,674 @@ async function startServer() {
         amountLkr: result.event.amountLkr,
         bank: result.event.bank,
         reference: result.event.reference,
-        matchedOrderId: result.matchedOrder?.id || null,
+        matchedOrderId: autoOrderMatchedId || result.matchedOrder?.id || null,
+        autoOrderOutcome,
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, message: err?.message || 'Webhook processing failed' });
+    }
+  });
+
+  // --- AUTO ORDER MANAGEMENT & FFGLORY API DELIVERY ROUTES ---
+  app.use('/api/auto-orders', requireAuthenticatedUser, requireBusinessTier);
+
+  const getBizActor = (req: Request): string => {
+    const principal = (req as any).authPrincipal as AuthenticatedPrincipal | undefined;
+    if (principal?.email) return principal.email;
+    const raw = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
+    return typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 64) : 'admin';
+  };
+
+  app.get('/api/auto-orders/dashboard', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const forceRefresh = req.query.force === 'true';
+      await ensureFreshFFGloryData(tenantId, { force: forceRefresh });
+      const summary = getAutoOrderDashboardSummary(tenantId);
+      const store = getBusinessStore(tenantId);
+      const engine = getBotEngine(tenantId);
+      res.json({
+        success: true,
+        data: {
+          ...summary,
+          botOnline: Boolean(engine.state.isOnline),
+          products: store.products.map((p) => ({
+            id: p.id,
+            name: p.name,
+            category: p.category,
+            platform: p.platform,
+            price: p.price,
+            packages: p.packages || [],
+            inStock: p.inStock,
+          })),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load Auto Order dashboard' });
+    }
+  });
+
+  app.post('/api/auto-orders/settings', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const {
+        ffgloryEnabled,
+        operatingMode,
+        autoDeliverOnVerifiedPayment,
+        supportContact,
+        apiKey,
+        masterKey,
+        clearApiKey,
+        clearMasterKey,
+      } = req.body || {};
+
+      updateAutoOrderSettings(tenantId, actor, {
+        ffgloryEnabled,
+        operatingMode,
+        autoDeliverOnVerifiedPayment,
+        supportContact,
+        apiKey,
+        masterKey,
+        clearApiKey,
+        clearMasterKey,
+      });
+
+      const { creds } = resolveFFGloryCredentials(tenantId);
+      let balanceSync: { success: boolean; account?: any; error?: string } | null = null;
+      if (creds.apiKey && creds.masterKey) {
+        balanceSync = await refreshFFGloryBalance(tenantId);
+        await refreshFFGloryPricing(tenantId).catch(() => null);
+        if (balanceSync?.success && (apiKey || masterKey) && operatingMode !== 'TEST') {
+          updateAutoOrderSettings(tenantId, actor, { operatingMode: 'LIVE', ffgloryEnabled: true });
+        }
+      }
+
+      const freshSummary = getAutoOrderDashboardSummary(tenantId);
+      res.json({
+        success: true,
+        data: freshSummary.settings,
+        balance: balanceSync?.account || null,
+        connectionSuccess: balanceSync ? balanceSync.success : null,
+        message: balanceSync
+          ? balanceSync.success
+            ? `FFGlory API Connected (LIVE MODE)! Balance: ${balanceSync.account?.basic_credits ?? 0} Basic · ${balanceSync.account?.premium_credits ?? 0} Premium Credits`
+            : `Settings saved, but FFGlory connection failed: ${balanceSync.error}`
+          : 'FFGlory API settings saved securely on server.',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to save API settings' });
+    }
+  });
+
+  app.post('/api/auto-orders/test-connection', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const result = await refreshFFGloryBalance(tenantId);
+      res.json({
+        success: result.success,
+        data: result.account || null,
+        message: result.success
+          ? `Connected to FFGlory Panel as ${result.account?.username} (Basic: ${result.account?.basic_credits}, Premium: ${result.account?.premium_credits})`
+          : result.error || 'Failed to connect to FFGlory API',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Connection test error' });
+    }
+  });
+
+  app.get('/api/auto-orders/balance', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const result = await refreshFFGloryBalance(tenantId);
+      res.json({
+        success: result.success,
+        data: result.account || null,
+        message: result.success ? 'Balance refreshed.' : result.error || 'Failed to fetch balance',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to check balance' });
+    }
+  });
+
+  app.get('/api/auto-orders/pricing', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const result = await refreshFFGloryPricing(tenantId);
+      res.json({
+        success: result.success,
+        data: result.pricing || null,
+        message: result.success ? 'Loaded live regions & pricing from FFGlory.' : result.error || 'Failed to load pricing',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load pricing' });
+    }
+  });
+
+  app.get('/api/auto-orders/ffglory/live-data', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const includeNotifications = req.query.includeNotifications === 'true';
+      const { creds } = resolveFFGloryCredentials(tenantId);
+      if (!creds.apiKey || !creds.masterKey) {
+        return res.status(400).json({
+          success: false,
+          message: 'Configure FFGlory API Key and Master Key in API Settings first.',
+        });
+      }
+
+      const [groupsRes, couponsRes, txnsRes, notifsRes] = await Promise.allSettled([
+        ffgloryClient.getMyGroups(creds),
+        ffgloryClient.getMyCoupons(creds),
+        ffgloryClient.getTransactions(creds),
+        includeNotifications ? ffgloryClient.getNotifications(creds) : Promise.resolve([]),
+      ]);
+
+      const state = getAutoOrderState(tenantId);
+      let hasErrors = false;
+      const errors: string[] = [];
+      const recordErr = (endpoint: string, reason: any) => {
+        hasErrors = true;
+        const code = reason instanceof FFGloryApiError ? reason.statusCode : 500;
+        const msg = reason?.message || 'Request failed';
+        errors.push(`${endpoint}: ${msg}`);
+        appendApiError(state, endpoint, code, msg);
+      };
+
+      if (groupsRes.status === 'rejected') recordErr('/api/client/my-groups', groupsRes.reason);
+      if (couponsRes.status === 'rejected') recordErr('/api/client/my-coupons', couponsRes.reason);
+      if (txnsRes.status === 'rejected') recordErr('/api/client/transactions', txnsRes.reason);
+      if (notifsRes.status === 'rejected') recordErr('/api/client/notifications', notifsRes.reason);
+      if (hasErrors) saveAutoOrderState(state);
+
+      res.json({
+        success: true,
+        data: {
+          groups: groupsRes.status === 'fulfilled' ? groupsRes.value : [],
+          coupons: couponsRes.status === 'fulfilled' ? couponsRes.value : [],
+          transactions: txnsRes.status === 'fulfilled' ? txnsRes.value : [],
+          notifications: notifsRes.status === 'fulfilled' ? notifsRes.value : [],
+          errors,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load FFGlory live data' });
+    }
+  });
+
+  app.post('/api/auto-orders/mappings', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const {
+        productId,
+        packageId,
+        enabled,
+        actionType,
+        basicCredits,
+        premiumCredits,
+        region,
+        priceLkrOverride,
+      } = req.body || {};
+
+      if (!productId || typeof productId !== 'string') {
+        return res.status(400).json({ success: false, message: 'productId is required.' });
+      }
+
+      const mappings = upsertProductMapping(tenantId, actor, {
+        productId,
+        packageId,
+        enabled: enabled !== false,
+        actionType,
+        basicCredits,
+        premiumCredits,
+        region,
+        priceLkrOverride,
+      });
+
+      res.json({ success: true, data: mappings, message: 'Product delivery mapping saved.' });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err?.message || 'Failed to save product mapping' });
+    }
+  });
+
+  app.delete('/api/auto-orders/mappings', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const productId = String(req.body?.productId || req.query.productId || '').trim();
+      const packageId = String(req.body?.packageId || req.query.packageId || '').trim() || undefined;
+      if (!productId) {
+        return res.status(400).json({ success: false, message: 'productId is required.' });
+      }
+      const mappings = deleteProductMapping(tenantId, actor, productId, packageId);
+      res.json({ success: true, data: mappings, message: 'Mapping removed.' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to delete mapping' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/approve', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const engine = getBotEngine(tenantId);
+      const result = await adminApproveOrderPayment(
+        tenantId,
+        req.params.id,
+        actor,
+        engine.getAutoOrderWhatsAppDispatcher(),
+        {
+          transactionId: req.body?.transactionId,
+          bank: req.body?.bank,
+          clanId: req.body?.clanId,
+        }
+      );
+      res.status(result.success ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to approve payment' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/reject', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const result = adminRejectOrCancelOrder(tenantId, req.params.id, actor, 'REJECT', req.body?.reason);
+      res.status(result.success ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to reject payment' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/cancel', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const result = adminRejectOrCancelOrder(tenantId, req.params.id, actor, 'CANCEL', req.body?.reason);
+      res.status(result.success ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to cancel order' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/retry', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const engine = getBotEngine(tenantId);
+      const result = await executeAutoOrderDelivery(tenantId, req.params.id, {
+        actor,
+        allowRetry: true,
+        dispatcher: engine.getAutoOrderWhatsAppDispatcher(),
+      });
+      res.status(result.success ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to retry delivery' });
+    }
+  });
+
+  app.post('/api/auto-orders/simulate-test', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const state = getAutoOrderState(tenantId);
+      if (state.settings.operatingMode !== 'TEST') {
+        return res.status(400).json({
+          success: false,
+          message: 'Switch to TEST MODE in API Settings before running end-to-end simulations.',
+        });
+      }
+
+      const {
+        actionType = 'COUPON',
+        customerNumber = '',
+        customerName = 'Test Customer',
+        amountLkr = 1500,
+        basicCredits = 1,
+        premiumCredits = 0,
+        region = 'bd',
+        clanId = '123456789',
+        sendWhatsApp = false,
+      } = req.body || {};
+
+      const cleanDigits = normalizeWhatsAppNumber(String(customerNumber || '')) || String(customerNumber || '').replace(/\D/g, '');
+      const customerJid = cleanDigits.length >= 8 ? `${cleanDigits}@s.whatsapp.net` : '';
+
+      const order = createAutoOrder(tenantId, {
+        customerJid,
+        customerNumber: cleanDigits || '94700000000',
+        customerName: String(customerName || 'Test Customer').slice(0, 60),
+        productId: actionType === 'CLAN_GROUP' ? 'test-ffglory-group' : 'test-ffglory-coupon',
+        productName:
+          actionType === 'CLAN_GROUP'
+            ? `Test Clan Glory Group (${String(region).toUpperCase()})`
+            : `Test FFGlory Coupon (${basicCredits}B / ${premiumCredits}P)`,
+        priceDisplay: `LKR ${Number(amountLkr) || 1500}`,
+        amountLkr: Number(amountLkr) || 1500,
+        clanId: actionType === 'CLAN_GROUP' ? String(clanId || '123456789') : undefined,
+        regionOverride: actionType === 'CLAN_GROUP' ? String(region || 'bd') : undefined,
+        modeOverride: 'TEST',
+      });
+
+      const db = getAutoOrderState(tenantId);
+      const found = db.orders.find((o) => o.id === order.id);
+      if (found) {
+        found.deliveryAction = actionType === 'CLAN_GROUP' ? 'CLAN_GROUP' : 'COUPON';
+        found.deliveryParams =
+          found.deliveryAction === 'CLAN_GROUP'
+            ? { region: String(region || 'bd').toLowerCase(), clan_id: String(clanId || '123456789') }
+            : {
+                basic_credits: Math.max(0, Math.floor(Number(basicCredits) || 0)),
+                premium_credits: Math.max(0, Math.floor(Number(premiumCredits) || 0)),
+              };
+        saveAutoOrderState(db);
+      }
+
+      const simRef = `SIM${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const engine = getBotEngine(tenantId);
+      const simEvent = {
+        id: `sim-${Date.now()}`,
+        source: 'test' as const,
+        bank: 'Commercial Bank (Test)',
+        amountLkr: Number(amountLkr) || 1500,
+        reference: simRef,
+        sender: 'COMBANK',
+        rawMessage: `A/C Credited LKR ${(Number(amountLkr) || 1500).toFixed(2)} Ref ${simRef} ${order.id}`,
+        status: 'matched' as const,
+        timestamp: new Date().toISOString(),
+      };
+
+      const flowResult = await processGatewayPaymentForAutoOrders(
+        tenantId,
+        simEvent,
+        sendWhatsApp ? engine.getAutoOrderWhatsAppDispatcher() : undefined,
+        { targetOrderId: order.id, verifiedBy: 'TEST_SIMULATOR' }
+      );
+
+      res.json({
+        success: flowResult.outcome === 'VERIFIED_AND_DELIVERED',
+        data: flowResult,
+        message: flowResult.message,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Test simulation failed' });
+    }
+  });
+
+  app.post('/api/auto-orders/guild-settings', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const actor = getBizActor(req);
+      const {
+        guildFlowEnabled,
+        welcomeOnFirstMessage,
+        guildPricing,
+        paymentAccount,
+        publicPortalBaseUrl,
+      } = req.body || {};
+      const updated = updateGuildFlowSettings(tenantId, actor, {
+        guildFlowEnabled,
+        welcomeOnFirstMessage,
+        guildPricing,
+        paymentAccount,
+        publicPortalBaseUrl,
+      });
+      res.json({
+        success: true,
+        data: updated,
+        message: 'Guild Service Pricing & Payment Account Settings saved.',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to save Guild settings' });
+    }
+  });
+
+  app.get('/api/auto-orders/receipt-file/:fileName', (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const resolvedPath = resolveStoredReceiptFilePath(tenantId, req.params.fileName);
+      if (!resolvedPath) {
+        return res.status(404).json({ success: false, message: 'Receipt file not found.' });
+      }
+      res.sendFile(resolvedPath);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load receipt file' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/live-glory', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const result = await fetchOrderLiveGlory(tenantId, req.params.id, { force: true });
+      res.status(result.success ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to refresh Live Glory' });
+    }
+  });
+
+  app.post('/api/auto-orders/orders/:id/send-guild-config', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const state = getAutoOrderState(tenantId);
+      const order = state.orders.find((o) => o.id === req.params.id);
+      if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+      const engine = getBotEngine(tenantId);
+      const sent = await sendPhase5GuildConfigCard(tenantId, order, engine.getAutoOrderWhatsAppDispatcher());
+      res.json({
+        success: sent,
+        portalUrl: buildOrderPortalUrl(tenantId, order),
+        message: sent ? 'Guild Configuration Card sent to WhatsApp.' : 'Bot offline — you can share the Portal URL directly.',
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to send Guild Config Card' });
+    }
+  });
+
+  app.post('/api/auto-orders/simulate-guild-flow', async (req: Request, res: Response) => {
+    try {
+      const tenantId = getBizStoreTenantId(req);
+      const state = getAutoOrderState(tenantId);
+      if (state.settings.operatingMode !== 'TEST') {
+        return res.status(400).json({
+          success: false,
+          message: 'Switch to TEST MODE in API Settings to create interactive test Guild orders.',
+        });
+      }
+      const rawQty = Number(req.body?.botQuantity || 4);
+      const botQuantity: GuildBotQuantity =
+        rawQty === 8 || rawQty === 12 || rawQty === 16 ? rawQty : 4;
+      const customerName = String(req.body?.customerName || 'Test Guild Customer').slice(0, 60);
+      const customerNumber = String(req.body?.customerNumber || '94700000000').replace(/\D/g, '') || '94700000000';
+
+      const order = createGuildServiceOrder(tenantId, {
+        customerJid: `${customerNumber}@s.whatsapp.net`,
+        customerNumber,
+        customerName,
+        botQuantity,
+        modeOverride: 'TEST',
+      });
+
+      const simRef = `SIMG${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const flowRes = await processGatewayPaymentForAutoOrders(
+        tenantId,
+        {
+          id: `simg-${Date.now()}`,
+          source: 'test',
+          bank: 'Commercial Bank (Test)',
+          amountLkr: order.amountLkr,
+          reference: simRef,
+          sender: 'COMBANK',
+          rawMessage: `Credited LKR ${order.amountLkr.toFixed(2)} Ref ${simRef} ${order.id}`,
+          status: 'matched',
+          timestamp: new Date().toISOString(),
+        },
+        undefined,
+        { targetOrderId: order.id, verifiedBy: 'TEST_SIMULATOR' }
+      );
+
+      const freshOrder = getAutoOrderState(tenantId).orders.find((o) => o.id === order.id) || order;
+      const portalUrl = buildOrderPortalUrl(tenantId, freshOrder);
+      res.json({
+        success: true,
+        data: {
+          order: freshOrder,
+          portalUrl,
+          portalPath: `/guild-portal?order=${encodeURIComponent(freshOrder.id)}&token=${encodeURIComponent(freshOrder.portalToken || '')}`,
+          outcome: flowRes.outcome,
+        },
+        message: `Test Guild Order ${freshOrder.id} (${botQuantity} BOTS · LKR ${freshOrder.amountLkr}) verified! Open the Guild Configuration Portal to test Phases 5–8.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Guild test simulation failed' });
+    }
+  });
+
+  // --- PUBLIC TOKEN-SCOPED CUSTOMER GUILD PORTAL (PHASE 5 CONFIG + PHASE 7 PROCESSING + PHASE 8 LIVE GLORY) ---
+  app.get('/api/guild-portal/:orderId', async (req: Request, res: Response) => {
+    try {
+      const orderId = String(req.params.orderId || '').trim().toUpperCase();
+      const token = String(req.query.token || '').trim();
+      const match = findOrderByPortalToken(orderId, token);
+      if (!match) {
+        return res.status(403).json({
+          success: false,
+          message: 'Invalid or expired Guild Configuration link. Please check your WhatsApp order message.',
+        });
+      }
+
+      const { tenantId, order } = match;
+      await ensureFreshFFGloryData(tenantId, { balanceTtlMs: 60000, pricingTtlMs: 300000 }).catch(() => {});
+      const state = getAutoOrderState(tenantId);
+      const liveRegions = (state.settings.cachedPricing?.regions || []).filter((r) => r.enabled !== false);
+
+      res.json({
+        success: true,
+        data: {
+          brandName: 'YASHI HALLS',
+          order: {
+            id: order.id,
+            mode: order.mode,
+            serviceType: order.serviceType || 'GUILD_SERVICE',
+            productName: order.productName,
+            botQuantity: order.botQuantity || 4,
+            amountLkr: order.amountLkr,
+            status: order.status,
+            statusReason: order.statusReason || '',
+            processingStage: order.processingStage || (order.status === 'DELIVERED' ? 'LAUNCHED' : 'PAYMENT_VERIFIED'),
+            guildConfig: order.guildConfig || null,
+            payment: order.payment
+              ? {
+                  bank: order.payment.bank,
+                  amountLkr: order.payment.amountLkr,
+                  transactionId: order.payment.transactionId,
+                  paidAt: order.payment.paidAt,
+                }
+              : null,
+            delivery: order.delivery
+              ? {
+                  success: order.delivery.success,
+                  groupId: order.delivery.groupId,
+                  botCount: order.delivery.botCount,
+                  region: order.delivery.region,
+                  clanId: order.delivery.clanId,
+                  completedAt: order.delivery.completedAt,
+                  errorMessage: order.delivery.errorMessage,
+                }
+              : null,
+            liveGlory: order.liveGlory
+              ? {
+                  currentGlory: order.liveGlory.currentGlory,
+                  clanName: order.liveGlory.clanName,
+                  clanLevel: order.liveGlory.clanLevel,
+                  memberCount: order.liveGlory.memberCount,
+                  groupStatus: order.liveGlory.groupStatus,
+                  uptime: order.liveGlory.uptime,
+                  lastUpdatedAt: order.liveGlory.lastUpdatedAt,
+                  errors: order.liveGlory.errors,
+                }
+              : null,
+            createdAt: order.createdAt,
+            updatedAt: order.updatedAt,
+          },
+          regions: liveRegions.map((r) => ({
+            id: r.id,
+            region_name: r.region_name,
+            region_code: r.region_code,
+            tier: r.tier,
+            enabled: r.enabled,
+          })),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to load Guild Portal' });
+    }
+  });
+
+  app.post('/api/guild-portal/:orderId/configure', async (req: Request, res: Response) => {
+    try {
+      const orderId = String(req.params.orderId || '').trim().toUpperCase();
+      const token = String(req.body?.token || '').trim();
+      const regionId = String(req.body?.regionId || '').trim();
+      const clanId = String(req.body?.clanId || '').trim();
+
+      const match = findOrderByPortalToken(orderId, token);
+      if (!match) {
+        return res.status(403).json({ success: false, message: 'Invalid or expired portal authorization token.' });
+      }
+
+      const engine = getBotEngine(match.tenantId);
+      const result = await submitGuildConfiguration(
+        match.tenantId,
+        match.order.id,
+        {
+          regionId,
+          clanId,
+          submittedVia: 'WEB_CARD',
+          actor: `customer:${match.order.customerNumber}`,
+        },
+        engine.getAutoOrderWhatsAppDispatcher()
+      );
+
+      res.status(result.success ? 200 : 400).json({
+        success: result.success,
+        message: result.message,
+        orderStatus: result.order?.status || null,
+        groupId: result.order?.delivery?.groupId || null,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to submit Guild Details' });
+    }
+  });
+
+  app.post('/api/guild-portal/:orderId/live-glory', async (req: Request, res: Response) => {
+    try {
+      const orderId = String(req.params.orderId || '').trim().toUpperCase();
+      const token = String(req.body?.token || '').trim();
+      const match = findOrderByPortalToken(orderId, token);
+      if (!match) {
+        return res.status(403).json({ success: false, message: 'Invalid or expired portal authorization token.' });
+      }
+
+      const result = await fetchOrderLiveGlory(match.tenantId, match.order.id, { force: false });
+      res.status(result.success ? 200 : 400).json({
+        success: result.success,
+        message: result.message,
+        cooldownRemainingSec: result.cooldownRemainingSec || 0,
+        liveGlory: result.liveGlory
+          ? {
+              currentGlory: result.liveGlory.currentGlory,
+              clanName: result.liveGlory.clanName,
+              clanLevel: result.liveGlory.clanLevel,
+              memberCount: result.liveGlory.memberCount,
+              groupStatus: result.liveGlory.groupStatus,
+              uptime: result.liveGlory.uptime,
+              lastUpdatedAt: result.liveGlory.lastUpdatedAt,
+              errors: result.liveGlory.errors,
+            }
+          : null,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to fetch Live Glory' });
     }
   });
 
@@ -933,41 +1954,15 @@ async function startServer() {
     }
   });
 
-  const AUTHORIZED_ADMIN_EMAILS = [
-    'sawrikasuraj9@gmail.com',
-    'sawrikasuraj759@gmail.com',
-    'epavenav@gmail.com'
-  ];
+  const verifyAdmin = requireAuthorizedAdmin;
 
-  const verifyAdmin = (req: Request, res: Response, next: () => void) => {
-    const rawEmail = req.headers['x-admin-email'] || req.query.adminEmail || req.body?.adminEmail;
-    const cleanEmail = String(rawEmail || '').trim().toLowerCase();
+  // --- MANUAL PURCHASE REQUESTS (CUSTOMER & ADMIN) ---
 
-    if (!cleanEmail || !AUTHORIZED_ADMIN_EMAILS.map(e => e.toLowerCase()).includes(cleanEmail)) {
-      adminStore.addAuditLog(
-        cleanEmail || 'anonymous',
-        'UNAUTHORIZED_ADMIN_ATTEMPT',
-        `Blocked attempt to access ${req.method} ${req.path} from IP ${req.ip || 'unknown'}`
-      );
-      return res.status(403).json({
-        success: false,
-        message: 'Forbidden. Verified Master Admin permissions required for this action.',
-      });
-    }
-
-    (req as any).adminEmail = cleanEmail;
-    next();
-  };
-
-  // --- MANUAL PURCHASE REQUESTS (PUBLIC / CUSTOMER & ADMIN) ---
-
-  // Customer submits a manual purchase request for PRO/BUSINESS or Coins
-  app.post('/api/purchase-requests/create', (req: Request, res: Response) => {
+  // Customer submits a manual purchase request (Coin packs or legacy manual requests)
+  app.post('/api/purchase-requests/create', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
       const {
-        customerId,
-        customerEmail,
-        customerName,
         itemType,
         itemName,
         planId,
@@ -976,7 +1971,7 @@ async function startServer() {
         priceFormatted,
       } = req.body;
 
-      if (!customerEmail || !itemType || !itemName) {
+      if (!itemType || !itemName) {
         return res.status(400).json({
           success: false,
           message: 'Missing required purchase request details.',
@@ -984,9 +1979,9 @@ async function startServer() {
       }
 
       const newReq = adminStore.createPurchaseRequest({
-        customerId: customerId || `cust-${Date.now()}`,
-        customerEmail: String(customerEmail).trim().toLowerCase(),
-        customerName: customerName || customerEmail.split('@')[0],
+        customerId: principal.uid,
+        customerEmail: principal.email,
+        customerName: principal.username || principal.email.split('@')[0],
         itemType,
         itemName,
         planId,
@@ -995,7 +1990,6 @@ async function startServer() {
         priceFormatted: priceFormatted || `Rs ${Number(priceLkr || 0).toLocaleString()}`,
       });
 
-      // Synchronize customer profile into admin customer directory
       adminStore.syncCustomer(
         newReq.customerId,
         newReq.customerEmail,
@@ -1014,9 +2008,13 @@ async function startServer() {
   });
 
   // Get user's own purchase requests
-  app.get('/api/purchase-requests/user/:email', (req: Request, res: Response) => {
+  app.get('/api/purchase-requests/user/:email', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
       const email = String(req.params.email).trim().toLowerCase();
+      if (!principal.isAdmin && principal.email !== email) {
+        return res.status(403).json({ success: false, message: 'Forbidden.' });
+      }
       const all = adminStore.getPurchaseRequests();
       const userRequests = all.filter((r) => r.customerEmail.toLowerCase() === email);
       res.json({ success: true, data: userRequests });
@@ -1026,14 +2024,31 @@ async function startServer() {
   });
 
   // Get live customer profile by email (used by client to sync approved coins and plans)
-  app.get('/api/customer/profile/:email', (req: Request, res: Response) => {
+  app.get('/api/customer/profile/:email', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
       const email = String(req.params.email || '').trim().toLowerCase();
+      if (!principal.isAdmin && principal.email !== email) {
+        return res.status(403).json({ success: false, message: 'Forbidden.' });
+      }
       const cust = adminStore.getCustomer(email);
       if (!cust) {
         return res.json({ success: false, message: 'Customer not found' });
       }
-      res.json({ success: true, customer: cust });
+      const subSummary = subscriptionService.getUserSubscriptionView(
+        principal.uid,
+        principal.email,
+        principal.username
+      ).subscription;
+      res.json({
+        success: true,
+        customer: {
+          ...cust,
+          plan: subSummary.plan,
+          planActivatedAt: subSummary.activatedAt || cust.planActivatedAt,
+          planExpiresAt: subSummary.expiresAt || cust.planExpiresAt,
+        },
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || 'Error' });
     }
@@ -1146,15 +2161,28 @@ async function startServer() {
     }
   });
 
-  // Admin sync/register customer
-  app.post('/api/admin/customers/sync', (req: Request, res: Response) => {
+  // Sync/register authenticated customer (non-admins cannot self-elevate plan or coins)
+  app.post('/api/admin/customers/sync', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
-      const { id, email, username, plan, coins } = req.body;
-      if (!email) return res.status(400).json({ success: false, message: 'Email required' });
-      const record = adminStore.syncCustomer(id, email, username, plan, coins);
-      res.json({ success: true, data: record });
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const { id, email, username, plan, coins } = req.body || {};
+
+      if (principal.isAdmin) {
+        if (!email) return res.status(400).json({ success: false, message: 'Email required' });
+        const record = adminStore.syncCustomer(id, email, username, plan, coins);
+        return res.json({ success: true, data: record });
+      }
+
+      const effectiveTier = subscriptionService.getEffectiveTier(principal.uid, principal.email, false);
+      const record = adminStore.syncCustomer(
+        principal.uid,
+        principal.email,
+        username || principal.username,
+        effectiveTier
+      );
+      return res.json({ success: true, data: record });
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err?.message || 'Failed to sync' });
+      return res.status(500).json({ success: false, message: err?.message || 'Failed to sync' });
     }
   });
 
@@ -1625,24 +2653,26 @@ async function startServer() {
   });
 
   // 9. Customer-facing Voice Replies and Bot Toggle
-  app.get('/api/voice-replies/customer', (req: Request, res: Response) => {
+  app.get('/api/voice-replies/customer', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
-      const customerId = req.query.customerId as string;
-      const list = adminStore.getVoiceReplies(undefined, customerId);
+      const principal = (req as any).authPrincipal as AuthenticatedPrincipal;
+      const engine = getEngineForReq(req);
+      const list = adminStore.getVoiceReplies(undefined, principal.uid);
       res.json({
         success: true,
         data: list,
-        voiceAutoReplyEnabled: botEngine.getState().config.voiceAutoReplyEnabled,
+        voiceAutoReplyEnabled: engine.getState().config.voiceAutoReplyEnabled,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || 'Failed to fetch customer voice replies' });
     }
   });
 
-  app.post('/api/voice-replies/customer/toggle', (req: Request, res: Response) => {
+  app.post('/api/voice-replies/customer/toggle', requireAuthenticatedUser, (req: Request, res: Response) => {
     try {
       const { enabled } = req.body;
-      const updated = botEngine.updateConfig({ voiceAutoReplyEnabled: Boolean(enabled) });
+      const engine = getEngineForReq(req);
+      const updated = engine.updateConfig({ voiceAutoReplyEnabled: Boolean(enabled) });
       res.json({ success: true, voiceAutoReplyEnabled: updated.voiceAutoReplyEnabled });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || 'Failed to toggle voice auto reply' });
@@ -1774,7 +2804,19 @@ async function startServer() {
       console.warn("[BOT ENGINE] autoBoot notice:", err?.message || err);
     });
 
-    // 4. Built-in Internal 24/7 Anti-Sleep Self-Heartbeat Engine
+    // 4. Subscription Auto-Expiry Downgrade & Renewal Reminder Sweep (every 60s + on boot)
+    try {
+      subscriptionService.runExpiryAndReminderSweep();
+    } catch (err) {
+      console.warn("[SUBSCRIPTION] initial sweep notice:", err);
+    }
+    setInterval(() => {
+      try {
+        subscriptionService.runExpiryAndReminderSweep();
+      } catch {}
+    }, 60000);
+
+    // 5. Built-in Internal 24/7 Anti-Sleep Self-Heartbeat Engine
     // Keeps Node.js process & Cloud container awake continuously without external tools like UptimeRobot
     setInterval(async () => {
       try {

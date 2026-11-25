@@ -14,7 +14,11 @@ import {
   ServerBotState,
   ServerBotLog,
   ServerBotConfig,
-  PurchaseRequest
+  PurchaseRequest,
+  BillingConfigData,
+  SubscriptionSummary,
+  ManualPaymentRequestItem,
+  SubscriptionNotificationItem
 } from '../types';
 import { 
   INITIAL_USER, 
@@ -37,9 +41,13 @@ import {
   doc,
   getDoc,
   setDoc,
+  serverTimestamp,
+  OperationType,
+  handleFirestoreError,
   FirebaseUser
 } from '../firebase';
 import { soundFX } from '../utils/sound';
+import { getStoredSessionToken, setStoredSessionToken, withAuthHeaders } from '../utils/authHeaders';
 
 interface AppContextType {
   // Auth Gate
@@ -49,7 +57,6 @@ interface AppContextType {
   loginWithGoogleCredential: (idToken: string) => Promise<void>;
   loginWithEmail: (email: string, pass: string) => Promise<boolean>;
   signupWithEmail: (name: string, email: string, pass: string) => Promise<boolean>;
-  loginAsDemo: (demoEmail?: string) => void;
   logout: () => Promise<void>;
 
   // User Profile & Coins
@@ -135,10 +142,27 @@ interface AppContextType {
   resetQuotas: () => Promise<void>;
   resetAccountData: () => void;
 
-  // Admin & Manual Purchase State
+  // Admin, Auth Token & Subscription State
+  authToken: string;
   isAdmin: boolean;
   adminWhatsappNumber: string;
   userPurchaseRequests: PurchaseRequest[];
+  subscriptionSummary: SubscriptionSummary | null;
+  subscriptionRequests: ManualPaymentRequestItem[];
+  billingConfig: BillingConfigData | null;
+  subscriptionNotifications: SubscriptionNotificationItem[];
+  selectedSubscriptionTier: 'pro' | 'business';
+  setSelectedSubscriptionTier: (tier: 'pro' | 'business') => void;
+  navigateToSubscription: (tier?: 'pro' | 'business') => void;
+  refreshSubscription: () => Promise<void>;
+  submitManualSubscriptionPayment: (payload: {
+    packageId: 'pro' | 'business';
+    transactionReference: string;
+    paymentDate: string;
+    receiptBase64: string;
+    notes?: string;
+  }) => Promise<{ success: boolean; message: string; request?: ManualPaymentRequestItem | null }>;
+  markSubscriptionNotificationRead: (id: string) => Promise<void>;
   submitPurchaseRequest: (item: {
     itemType: 'plan' | 'coin_pack';
     itemName: string;
@@ -165,6 +189,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [currentFirebaseUser, setCurrentFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [authToken, setAuthTokenState] = useState<string>(() => getStoredSessionToken());
+
+  const setAuthToken = useCallback((token: string | null) => {
+    const clean = token && token.trim() ? token.trim() : '';
+    setStoredSessionToken(clean || null);
+    setAuthTokenState(clean);
+  }, []);
 
   const [user, setUser] = useState<UserProfile>(INITIAL_USER);
   const [coins, setCoins] = useState<number>(5);
@@ -174,6 +205,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [theme, setThemeState] = useState<ThemeMode>('dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+
+  const [subscriptionSummary, setSubscriptionSummary] = useState<SubscriptionSummary | null>(null);
+  const [subscriptionRequests, setSubscriptionRequests] = useState<ManualPaymentRequestItem[]>([]);
+  const [billingConfig, setBillingConfig] = useState<BillingConfigData | null>(null);
+  const [subscriptionNotifications, setSubscriptionNotifications] = useState<SubscriptionNotificationItem[]>([]);
+  const [selectedSubscriptionTier, setSelectedSubscriptionTier] = useState<'pro' | 'business'>('pro');
+
+  const navigateToSubscription = useCallback((tier?: 'pro' | 'business') => {
+    if (tier === 'pro' || tier === 'business') {
+      setSelectedSubscriptionTier(tier);
+    }
+    setActiveTab('subscription');
+  }, []);
 
   // Compute effective user ID for multi-tenant bot sessions and storage
   const effectiveUserId = React.useMemo(() => {
@@ -187,10 +231,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [currentFirebaseUser?.uid, isAuthenticated, user?.email]);
 
   const getBotHeaders = useCallback((extra: Record<string, string> = {}) => {
-    return {
+    return withAuthHeaders({
       'x-user-id': effectiveUserId,
       ...extra,
-    };
+    });
   }, [effectiveUserId]);
 
   // Real Server Engine State (isolated per customer)
@@ -288,9 +332,109 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Subscription & Billing Fetchers
+  const fetchPublicBillingConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/subscriptions/config');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          setBillingConfig(json.data);
+        }
+      }
+    } catch {
+      // ignore transient network errors
+    }
+  }, []);
+
+  const applyServerSubscriptionToUser = useCallback((sub: SubscriptionSummary | null | undefined) => {
+    if (!sub) return;
+    setSubscriptionSummary(sub);
+    const serverPlan: 'mini' | 'pro' | 'business' =
+      sub.plan === 'business' ? 'business' : sub.plan === 'pro' ? 'pro' : 'mini';
+    const slots = serverPlan === 'business' ? 25 : serverPlan === 'pro' ? 5 : 1;
+    setUser((prev) => ({
+      ...prev,
+      plan: serverPlan,
+      botSlotsTotal: slots,
+      ownedPlans: serverPlan === 'mini' ? ['mini'] : ['mini', serverPlan],
+    }));
+  }, []);
+
+  const refreshSubscription = useCallback(async () => {
+    await fetchPublicBillingConfig();
+    const token = authToken || getStoredSessionToken();
+    if (!token) return;
+    try {
+      const res = await fetch('/api/subscriptions/me', {
+        headers: withAuthHeaders(),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          if (json.data.billingConfig) {
+            setBillingConfig(json.data.billingConfig);
+          }
+          if (Array.isArray(json.data.requests)) {
+            setSubscriptionRequests(json.data.requests);
+          }
+          if (Array.isArray(json.data.notifications)) {
+            setSubscriptionNotifications(json.data.notifications);
+          }
+          if (json.data.subscription) {
+            applyServerSubscriptionToUser(json.data.subscription);
+          }
+        }
+      }
+    } catch {
+      // ignore transient errors
+    }
+  }, [authToken, fetchPublicBillingConfig, applyServerSubscriptionToUser]);
+
+  const establishBackendSession = useCallback(async (params: {
+    idToken?: string;
+    email?: string;
+    username?: string;
+    uid?: string;
+  }): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      if (!res.ok) return false;
+      const json = await res.json();
+      if (json.success && json.token) {
+        setAuthToken(json.token);
+        if (json.subscription) {
+          applyServerSubscriptionToUser(json.subscription);
+        }
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }, [setAuthToken, applyServerSubscriptionToUser]);
+
+  // Load public billing config on initial boot
+  useEffect(() => {
+    fetchPublicBillingConfig();
+  }, [fetchPublicBillingConfig]);
+
+  // Periodically refresh subscription & expiry state while authenticated
+  useEffect(() => {
+    if (!isAuthenticated || !authToken) return;
+    refreshSubscription();
+    const subInterval = setInterval(refreshSubscription, 30000);
+    return () => clearInterval(subInterval);
+  }, [isAuthenticated, authToken, refreshSubscription]);
+
   // Real Backend Status Polling - Isolated per Customer
   const refreshBotStatus = useCallback(async () => {
-    if (!isAuthenticated) {
+    const token = authToken || getStoredSessionToken();
+    if (!isAuthenticated || !token) {
       setServerBotState(null);
       setServerLogs([]);
       return;
@@ -334,11 +478,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       setIsBackendConnected(false);
     }
-  }, [isAuthenticated, getBotHeaders, addToast]);
+  }, [isAuthenticated, authToken, getBotHeaders, addToast]);
 
   // Real Backend Logs Polling - Isolated per Customer
   const fetchLogs = useCallback(async () => {
-    if (!isAuthenticated) {
+    const token = authToken || getStoredSessionToken();
+    if (!isAuthenticated || !token) {
       setServerLogs([]);
       return;
     }
@@ -355,15 +500,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // ignore
     }
-  }, [isAuthenticated, getBotHeaders]);
+  }, [isAuthenticated, authToken, getBotHeaders]);
 
-  // Poll server state every 2.5s ONLY for authenticated user's bot
+  // Poll server state every 1.2s ONLY for authenticated user's bot once token is ready
   useEffect(() => {
-    if (!isAuthenticated) {
-      setServerBotState(null);
-      setServerLogs([]);
-      setPairingSession(null);
-      wasOnlineRef.current = false;
+    if (!isAuthenticated || !authToken) {
+      if (!isAuthenticated) {
+        setServerBotState(null);
+        setServerLogs([]);
+        setPairingSession(null);
+        wasOnlineRef.current = false;
+      }
       return;
     }
     let isCancelled = false;
@@ -382,13 +529,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     runFastPulse();
-    // Second-by-second high speed status & keep-alive pulse (1200ms)
     const interval = setInterval(runFastPulse, 1200);
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [isAuthenticated, refreshBotStatus, fetchLogs]);
+  }, [isAuthenticated, authToken, refreshBotStatus, fetchLogs]);
 
   // Global lightweight background keepalive ping (runs on any page of website)
   useEffect(() => {
@@ -410,156 +556,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const name = fbUser.displayName || email.split('@')[0] || 'User';
         const isGoogle = fbUser.providerData.some((p) => p.providerId === 'google.com');
 
+        let idToken: string | undefined;
         try {
-          const userDocRef = doc(db, 'users', fbUser.uid);
-          const snap = await getDoc(userDocRef);
-          if (snap.exists()) {
-            const data = snap.data();
-            const rawPlan = data.plan;
-            const userPlan: 'mini' | 'pro' | 'business' = rawPlan === 'business' ? 'business' : rawPlan === 'pro' ? 'pro' : 'mini';
-            const slotsTotal = userPlan === 'business' ? 25 : userPlan === 'pro' ? 5 : 1;
-            const initialOwned: ('mini' | 'pro' | 'business')[] = Array.isArray(data.ownedPlans) 
-              ? data.ownedPlans 
-              : ['mini', ...(userPlan !== 'mini' ? [userPlan] : [])];
-
-            setUser({
-              username: data.username || name,
-              email: data.email || email,
-              isVerified: fbUser.emailVerified || isGoogle,
-              signInMethod: isGoogle ? 'GOOGLE' : 'EMAIL',
-              plan: userPlan,
-              ownedPlans: initialOwned,
-              botSlotsUsed: serverBotState?.isOnline ? 1 : 0,
-              botSlotsTotal: slotsTotal,
-              avatarLetter: (data.username || name).charAt(0).toUpperCase(),
-              emailNotifications: true,
-              productUpdates: false,
-            });
-            if (typeof data.coins === 'number') {
-              setCoins(data.coins);
-            }
-            if (typeof data.lastDailyClaim === 'number') {
-              const elapsed = Math.floor((Date.now() - data.lastDailyClaim) / 1000);
-              setCooldownSeconds(Math.max(0, 86400 - elapsed));
-            }
-
-            // Real-time synchronization to Admin Panel
-            fetch('/api/admin/customers/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                id: fbUser.uid,
-                email: data.email || email,
-                username: data.username || name,
-                plan: userPlan,
-                coins: typeof data.coins === 'number' ? data.coins : 5,
-                botStatus: serverBotState?.isOnline ? 'online' : 'none',
-              }),
-            }).catch(() => {});
-          } else {
-            const newUserProfile = {
-              username: name,
-              email,
-              plan: 'mini',
-              coins: 5,
-              createdAt: new Date().toISOString(),
-            };
-            await setDoc(userDocRef, newUserProfile);
-            setCoins(5);
-            setUser({
-              username: name,
-              email,
-              isVerified: fbUser.emailVerified || isGoogle,
-              signInMethod: isGoogle ? 'GOOGLE' : 'EMAIL',
-              plan: 'mini',
-              ownedPlans: ['mini'],
-              botSlotsUsed: 0,
-              botSlotsTotal: 1,
-              avatarLetter: name.charAt(0).toUpperCase(),
-              emailNotifications: true,
-              productUpdates: false,
-            });
-
-            // Real-time synchronization of new customer registration to Admin Panel
-            fetch('/api/admin/customers/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                id: fbUser.uid,
-                email,
-                username: name,
-                plan: 'mini',
-                coins: 5,
-                botStatus: 'none',
-              }),
-            }).catch(() => {});
-          }
-        } catch (err: any) {
-          const isOffline = err?.message?.includes('offline') || err?.code === 'unavailable';
-          if (isOffline) {
-            console.warn('Operating in offline/cached profile mode:', err?.message || err);
-          } else {
-            console.error('Error fetching Firestore user profile:', err);
-          }
-          setCoins(5);
-          setUser({
-            username: name,
-            email,
-            isVerified: fbUser.emailVerified || isGoogle,
-            signInMethod: isGoogle ? 'GOOGLE' : 'EMAIL',
-            plan: 'mini',
-            ownedPlans: ['mini'],
-            botSlotsUsed: 0,
-            botSlotsTotal: 1,
-            avatarLetter: name.charAt(0).toUpperCase(),
-            emailNotifications: true,
-            productUpdates: false,
-          });
-        }
-      } else {
-        // If not in Firebase Auth directly, check if session was authenticated via instant login
-        let restored = false;
-        try {
-          const cached = localStorage.getItem('yashi_cached_session');
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (parsed?.email) {
-              const name = parsed.email.split('@')[0] || 'User';
-              const isAdminUser = ['epavenav@gmail.com', 'sawrikasuraj759@gmail.com', 'sawrikasuraj9@gmail.com'].includes(parsed.email.toLowerCase());
-              setUser({
-                username: name,
-                email: parsed.email,
-                isVerified: true,
-                signInMethod: 'GOOGLE',
-                plan: isAdminUser ? 'business' : 'mini',
-                ownedPlans: isAdminUser ? ['mini', 'pro', 'business'] : ['mini'],
-                botSlotsUsed: 0,
-                botSlotsTotal: isAdminUser ? 25 : 1,
-                avatarLetter: name.charAt(0).toUpperCase(),
-                emailNotifications: true,
-                productUpdates: false,
-              });
-              if (isAdminUser) setCoins(1630);
-              setIsAuthenticated(true);
-              restored = true;
-            }
-          }
+          idToken = await fbUser.getIdToken();
         } catch {}
 
-        if (!restored) {
-          setCurrentFirebaseUser(null);
-          setIsAuthenticated(false);
-          setUser(INITIAL_USER);
-          setServerBotState(null);
-          setServerLogs([]);
-          setPairingSession(null);
-          wasOnlineRef.current = false;
+        setUser({
+          username: name,
+          email,
+          isVerified: fbUser.emailVerified || isGoogle,
+          signInMethod: isGoogle ? 'GOOGLE' : 'EMAIL',
+          plan: 'mini',
+          ownedPlans: ['mini'],
+          botSlotsUsed: 0,
+          botSlotsTotal: 1,
+          avatarLetter: name.charAt(0).toUpperCase(),
+          emailNotifications: true,
+          productUpdates: false,
+        });
+
+        await establishBackendSession({
+          idToken,
+          email,
+          username: name,
+          uid: fbUser.uid,
+        });
+
+        if (fbUser.emailVerified) {
+          try {
+            const userDocRef = doc(db, 'users', fbUser.uid);
+            const snap = await getDoc(userDocRef);
+            if (snap.exists()) {
+              const data = snap.data();
+              setUser((prev) => ({
+                ...prev,
+                username: data.username || name,
+                email: data.email || email,
+                avatarLetter: (data.username || name).charAt(0).toUpperCase(),
+              }));
+              if (typeof data.coins === 'number') {
+                setCoins(data.coins);
+              }
+              if (typeof data.lastDailyClaim === 'number') {
+                const elapsed = Math.floor((Date.now() - data.lastDailyClaim) / 1000);
+                setCooldownSeconds(Math.max(0, 86400 - elapsed));
+              }
+            } else {
+              const newUserProfile = {
+                uid: fbUser.uid,
+                username: name,
+                email: email.toLowerCase(),
+                plan: 'mini',
+                coins: 5,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              };
+              await setDoc(userDocRef, newUserProfile);
+              setCoins(5);
+            }
+          } catch (err: any) {
+            handleFirestoreError(err, OperationType.GET, `users/${fbUser.uid}`, true);
+          }
         }
+      } else {
+        try {
+          localStorage.removeItem('yashi_cached_session');
+        } catch {}
+        setAuthToken(null);
+        setCurrentFirebaseUser(null);
+        setIsAuthenticated(false);
+        setUser(INITIAL_USER);
+        setSubscriptionSummary(null);
+        setSubscriptionRequests([]);
+        setSubscriptionNotifications([]);
+        setServerBotState(null);
+        setServerLogs([]);
+        setPairingSession(null);
+        wasOnlineRef.current = false;
       }
     });
 
     return () => unsubscribe();
-  }, [serverBotState?.isOnline]);
+  }, [establishBackendSession, setAuthToken]);
 
   // Live Dynamic Custom CSS & Branding Injection from Admin Settings
   useEffect(() => {
@@ -1019,60 +1097,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast(`Theme switched to ${newTheme}`, 'info');
   };
 
-  // Auth Methods
-  const loginAsDemo = (demoEmail?: string) => {
-    const email = (demoEmail || 'sawrikasuraj759@gmail.com').trim();
-    const name = email.split('@')[0] || 'User';
-    const isAdminUser = ['epavenav@gmail.com', 'sawrikasuraj759@gmail.com', 'sawrikasuraj9@gmail.com'].includes(email.toLowerCase());
-
-    // Reset bot runtime state so demo customer gets fresh isolated session
-    setServerBotState(null);
-    setServerLogs([]);
-    setPairingSession(null);
-    wasOnlineRef.current = false;
-
-    const userData: UserProfile = {
-      username: name,
-      email: email,
-      isVerified: true,
-      signInMethod: 'GOOGLE',
-      plan: isAdminUser ? 'business' : 'mini',
-      ownedPlans: isAdminUser ? ['mini', 'pro', 'business'] : ['mini'],
-      botSlotsUsed: 0,
-      botSlotsTotal: isAdminUser ? 25 : 1,
-      avatarLetter: name.charAt(0).toUpperCase(),
-      emailNotifications: true,
-      productUpdates: false,
-    };
-
-    setUser(userData);
-    if (isAdminUser) {
-      setCoins(1630);
-    }
-    setIsAuthenticated(true);
-    try {
-      localStorage.setItem('yashi_cached_session', JSON.stringify({ email, isAdminUser, timestamp: Date.now() }));
-    } catch {}
-
-    // Synchronize to Admin Panel in background
-    fetch('/api/admin/customers/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: `user_${email.toLowerCase().replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-        email: email,
-        username: name,
-        plan: isAdminUser ? 'business' : 'mini',
-        coins: isAdminUser ? 1630 : 5,
-        botStatus: 'none',
-      }),
-    }).catch(() => {});
-
-    addToast(`Signed in successfully as ${email}!`, 'success');
-    soundFX.playSuccess();
-    triggerConfetti();
-  };
-
+  // Auth Methods (Real Google & Email/Password Authentication Only)
   const loginWithGoogle = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
@@ -1087,11 +1112,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (code === 'auth/popup-blocked') {
         addToast('Google login popup was blocked by browser. Please allow popups.', 'error');
       } else if (code === 'auth/cancelled-popup-request' || code === 'auth/popup-closed-by-user') {
-        addToast('Sign-in cancelled or closed. Tap "Instant Access" to proceed.', 'info');
+        addToast('Google Sign-In was closed before completion.', 'info');
       } else if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-        addToast('Google Sign-In: Domain check. Tap "Instant Access" to proceed.', 'info');
+        addToast('Google Sign-In domain is not yet authorized in Firebase Console.', 'error');
       } else {
-        addToast(msg || 'Google Sign-in status notice', 'info');
+        addToast(msg || 'Google Sign-In failed. Please try again.', 'error');
       }
       throw err;
     }
@@ -1107,76 +1132,83 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       triggerConfetti();
     } catch (err: unknown) {
       console.error('Google Sign-in Credential Error:', err);
-      // If credential fails due to domain restrictions, sign in smoothly
-      loginAsDemo('sawrikasuraj759@gmail.com');
+      addToast('Google Sign-In failed. Please try again.', 'error');
+      throw err;
     }
   };
 
   const loginWithEmail = async (email: string, pass: string): Promise<boolean> => {
-    const cleanEmail = (email || 'sawrikasuraj759@gmail.com').trim();
-    const cleanPass = pass || '123456';
-    const isOwner = ['sawrikasuraj759@gmail.com', 'epavenav@gmail.com', 'sawrikasuraj9@gmail.com'].includes(cleanEmail.toLowerCase());
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !pass) {
+      const errMsg = 'Please enter both your email address and password.';
+      addToast(errMsg, 'error');
+      throw new Error(errMsg);
+    }
 
     try {
-      const result = await signInWithEmailAndPassword(auth, cleanEmail, cleanPass);
+      const result = await signInWithEmailAndPassword(auth, cleanEmail, pass);
       addToast(`Welcome back, ${result.user.displayName || cleanEmail}!`, 'success');
       soundFX.playSuccess();
       triggerConfetti();
       return true;
     } catch (err: unknown) {
-      console.error('Email Login Notice:', err);
+      console.error('Email Login Error:', err);
       const code = (err as { code?: string })?.code || '';
-
-      // If user is not yet created in Firebase Auth with password, attempt automatic creation
-      if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
-        try {
-          const createResult = await createUserWithEmailAndPassword(auth, cleanEmail, cleanPass);
-          addToast(`Account created & signed in as ${cleanEmail}!`, 'success');
-          soundFX.playSuccess();
-          triggerConfetti();
-          return true;
-        } catch (createErr: any) {
-          console.warn('Auto create account notice:', createErr);
-        }
+      let friendly = 'Sign-in failed. Please check your email and password.';
+      if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        friendly = 'Invalid email or password. If you do not have an account yet, please use Create Account.';
+      } else if (code === 'auth/invalid-email') {
+        friendly = 'Please enter a valid email address.';
+      } else if (code === 'auth/too-many-requests') {
+        friendly = 'Too many failed attempts. Please wait a moment and try again.';
+      } else if (code === 'auth/operation-not-allowed') {
+        friendly = 'Email/Password sign-in is not enabled in Firebase Authentication.';
       }
-
-      // If owner account or mobile iframe restriction, NEVER block the user!
-      if (isOwner) {
-        loginAsDemo(cleanEmail);
-        return true;
-      }
-
-      // For any customer account, if Firebase authentication fails due to domain or password, log them in
-      loginAsDemo(cleanEmail);
-      return true;
+      addToast(friendly, 'error');
+      throw new Error(friendly);
     }
   };
 
   const signupWithEmail = async (name: string, email: string, pass: string): Promise<boolean> => {
-    if (!name || !email || !pass) {
-      addToast('Please fill all required fields', 'error');
-      return false;
+    const cleanName = name.trim();
+    const cleanEmail = email.trim();
+    if (!cleanName || !cleanEmail || !pass) {
+      const errMsg = 'Please fill all required fields.';
+      addToast(errMsg, 'error');
+      throw new Error(errMsg);
     }
     if (pass.length < 6) {
-      addToast('Password must be at least 6 characters', 'error');
-      return false;
+      const errMsg = 'Password must be at least 6 characters.';
+      addToast(errMsg, 'error');
+      throw new Error(errMsg);
     }
     try {
-      const result = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-      await updateProfile(result.user, { displayName: name.trim() });
-      addToast(`Account created for ${name}! +5 free coins credited.`, 'success');
+      const result = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+      await updateProfile(result.user, { displayName: cleanName });
+      setUser((prev) => ({
+        ...prev,
+        username: cleanName,
+        avatarLetter: cleanName.charAt(0).toUpperCase(),
+      }));
+      addToast(`Account created for ${cleanName}! +5 free coins credited.`, 'success');
       soundFX.playSuccess();
       triggerConfetti();
       return true;
     } catch (err: unknown) {
       console.error('Email Signup Error:', err);
       const code = (err as { code?: string })?.code || '';
+      let friendly = (err as { message?: string })?.message || 'Registration failed.';
       if (code === 'auth/email-already-in-use') {
-        addToast('This email is already registered. Please sign in instead.', 'error');
-      } else {
-        addToast('Sign-up failed: ' + ((err as { message?: string })?.message || 'Registration error'), 'error');
+        friendly = 'This email is already registered. Please sign in instead.';
+      } else if (code === 'auth/invalid-email') {
+        friendly = 'Please enter a valid email address.';
+      } else if (code === 'auth/weak-password') {
+        friendly = 'Password must be at least 6 characters.';
+      } else if (code === 'auth/operation-not-allowed') {
+        friendly = 'Email/Password sign-up is not enabled in Firebase Authentication.';
       }
-      return false;
+      addToast(friendly, 'error');
+      throw new Error(friendly);
     }
   };
 
@@ -1189,37 +1221,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         localStorage.removeItem('yashi_cached_session');
       } catch {}
+      setAuthToken(null);
       setIsAuthenticated(false);
       setCurrentFirebaseUser(null);
       setUser(INITIAL_USER);
+      setSubscriptionSummary(null);
+      setSubscriptionRequests([]);
+      setSubscriptionNotifications([]);
       setServerBotState(null);
       setServerLogs([]);
       setPairingSession(null);
       wasOnlineRef.current = false;
-      addToast('Signed out from HASHI HALLS successfully.', 'info');
+      addToast('Signed out from YASHI HALLS successfully.', 'info');
     }
   };
 
   const updateUser = async (partial: Partial<UserProfile>) => {
-    setUser((prev) => ({ ...prev, ...partial }));
-    if (currentFirebaseUser) {
+    const safeClientPartial: Partial<UserProfile> = { ...partial };
+    delete (safeClientPartial as any).plan;
+    delete (safeClientPartial as any).ownedPlans;
+    delete (safeClientPartial as any).botSlotsTotal;
+    setUser((prev) => ({ ...prev, ...safeClientPartial }));
+
+    if (currentFirebaseUser?.emailVerified && typeof safeClientPartial.username === 'string') {
       try {
-        await setDoc(doc(db, 'users', currentFirebaseUser.uid), partial, { merge: true });
-      } catch {
-        // fallback
+        await setDoc(
+          doc(db, 'users', currentFirebaseUser.uid),
+          { username: safeClientPartial.username, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${currentFirebaseUser.uid}`, true);
       }
     }
 
-    // Proactively sync name & profile with Admin Panel Customer Database
     fetch('/api/admin/customers/sync', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
-        id: currentFirebaseUser?.uid || user.email,
-        email: partial.email || user.email,
-        username: partial.username || user.username,
-        plan: partial.plan || user.plan,
-        coins: coins,
+        username: safeClientPartial.username || user.username,
         botStatus: serverBotState?.isOnline ? 'online' : 'none',
       }),
     }).catch(() => {});
@@ -1228,13 +1268,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCoins = (amount: number, title: string, category: Transaction['category'] = 'purchase') => {
-    setCoins((prev) => {
-      const updated = prev + amount;
-      if (currentFirebaseUser) {
-        setDoc(doc(db, 'users', currentFirebaseUser.uid), { coins: updated }, { merge: true }).catch(() => {});
-      }
-      return updated;
-    });
+    setCoins((prev) => prev + amount);
 
     const now = new Date();
     const timeStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
@@ -1268,8 +1302,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // ignore
     }
-    if (currentFirebaseUser) {
-      setDoc(doc(db, 'users', currentFirebaseUser.uid), { lastDailyClaim: now }, { merge: true }).catch(() => {});
+    if (currentFirebaseUser?.emailVerified) {
+      setDoc(
+        doc(db, 'users', currentFirebaseUser.uid),
+        { lastDailyClaim: now, updatedAt: serverTimestamp() },
+        { merge: true }
+      ).catch((err) => handleFirestoreError(err, OperationType.UPDATE, `users/${currentFirebaseUser.uid}`, true));
     }
     setCooldownSeconds(24 * 3600);
     soundFX.playSuccess();
@@ -1303,12 +1341,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     triggerConfetti();
   };
 
+  const markSubscriptionNotificationRead = useCallback(async (id: string) => {
+    setSubscriptionNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    try {
+      await fetch(`/api/subscriptions/notifications/${encodeURIComponent(id)}/read`, {
+        method: 'POST',
+        headers: withAuthHeaders(),
+      });
+    } catch {}
+  }, []);
+
+  const submitManualSubscriptionPayment = useCallback(async (payload: {
+    packageId: 'pro' | 'business';
+    transactionReference: string;
+    paymentDate: string;
+    receiptBase64: string;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string; request?: ManualPaymentRequestItem | null }> => {
+    try {
+      soundFX.playClick();
+      const res = await fetch('/api/subscriptions/requests', {
+        method: 'POST',
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        soundFX.playSuccess();
+        triggerConfetti();
+        addToast(json.message || 'Payment receipt submitted for admin verification.', 'success');
+        await refreshSubscription();
+        return { success: true, message: json.message, request: json.request || null };
+      }
+      addToast(json.message || 'Failed to submit payment receipt.', 'error');
+      return { success: false, message: json.message || 'Failed to submit payment receipt.' };
+    } catch (err: any) {
+      const msg = err?.message || 'Network error while uploading receipt.';
+      addToast(msg, 'error');
+      return { success: false, message: msg };
+    }
+  }, [addToast, refreshSubscription]);
+
+  const mergedNotifications: AppNotification[] = React.useMemo(() => {
+    const subMapped: AppNotification[] = subscriptionNotifications.map((n) => ({
+      id: n.id,
+      title: n.title,
+      message: n.message,
+      time: new Date(n.createdAt).toLocaleString(),
+      read: n.read,
+      type: n.type,
+    }));
+    return [...subMapped, ...notifications];
+  }, [subscriptionNotifications, notifications]);
+
   const markNotificationRead = (id: string) => {
+    if (id.startsWith('subnotif-')) {
+      void markSubscriptionNotificationRead(id);
+      return;
+    }
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   };
 
   const markAllNotificationsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    subscriptionNotifications.forEach((n) => {
+      if (!n.read) void markSubscriptionNotificationRead(n.id);
+    });
     addToast('All notifications marked as read', 'info');
   };
 
@@ -1316,14 +1414,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     soundFX.playClick();
     if (user.plan === targetPlan) return;
 
+    const serverActivePlan = subscriptionSummary?.plan || 'mini';
+
     // MINI is always free
     if (targetPlan === 'mini') {
       try {
-        const slots = 1;
         setUser((prev) => ({
           ...prev,
           plan: 'mini',
-          botSlotsTotal: slots,
+          botSlotsTotal: 1,
         }));
         const res = await fetch('/api/bot/plan', {
           method: 'POST',
@@ -1332,11 +1431,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         const data = await res.json();
         if (data.success) {
-          addToast('🟢 Switched to YASHI HALLS MINI (Free) plan.', 'info');
+          addToast('Switched to YASHI HALLS MINI (Free) engine mode.', 'info');
           await refreshBotStatus();
-        }
-        if (currentFirebaseUser) {
-          setDoc(doc(db, 'users', currentFirebaseUser.uid), { plan: 'mini' }, { merge: true }).catch(() => {});
         }
       } catch (err: any) {
         addToast(err?.message || 'Failed to update plan', 'error');
@@ -1344,22 +1440,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // PRO & BUSINESS: Check if user already owns this plan
-    const isOwned = user.ownedPlans?.includes(targetPlan);
-    if (!isOwned) {
-      // LOCKED! Must purchase via confirmation dialog with coins
-      setPlanToPurchase(targetPlan);
+    // Paid tiers require an active server-verified subscription
+    const hasServerEntitlement =
+      serverActivePlan === 'business' || (serverActivePlan === 'pro' && targetPlan === 'pro');
+    if (!hasServerEntitlement) {
+      addToast(
+        `${targetPlan.toUpperCase()} requires an active monthly subscription via manual bank transfer & admin approval.`,
+        'info'
+      );
+      setPlanToPurchase(null);
+      navigateToSubscription(targetPlan);
       return;
     }
 
-    // Already owned: switch directly
     try {
       const slots = targetPlan === 'business' ? 25 : 5;
-      setUser((prev) => ({
-        ...prev,
-        plan: targetPlan,
-        botSlotsTotal: slots,
-      }));
       const res = await fetch('/api/bot/plan', {
         method: 'POST',
         headers: getBotHeaders({ 'Content-Type': 'application/json' }),
@@ -1367,11 +1462,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       const data = await res.json();
       if (data.success) {
-        addToast(`Activated your owned ${targetPlan.toUpperCase()} plan.`, 'success');
+        setUser((prev) => ({
+          ...prev,
+          plan: targetPlan,
+          botSlotsTotal: slots,
+        }));
+        addToast(`Activated ${targetPlan.toUpperCase()} tier.`, 'success');
         await refreshBotStatus();
-      }
-      if (currentFirebaseUser) {
-        setDoc(doc(db, 'users', currentFirebaseUser.uid), { plan: targetPlan }, { merge: true }).catch(() => {});
+      } else {
+        addToast(data.message || 'Active subscription required on server.', 'error');
+        navigateToSubscription(targetPlan);
       }
     } catch (err: any) {
       addToast(err?.message || 'Failed to update plan', 'error');
@@ -1384,70 +1484,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setPlanToPurchase(null);
       return { success: true, message: 'Activated MINI Plan' };
     }
-
-    const cost = targetPlan === 'business' ? 30 : 10;
-    if (coins < cost) {
-      addToast(`⚠️ Insufficient coins! You need ${cost} coins, but your balance is only ${coins} coins.`, 'error');
-      return { success: false, message: `Insufficient coins (${cost} required)`, needCoins: true };
-    }
-
-    try {
-      soundFX.playClick();
-      const res = await fetch('/api/bot/purchase-plan', {
-        method: 'POST',
-        headers: getBotHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ plan: targetPlan, userCoins: coins, userId: effectiveUserId }),
-      });
-      const data = await res.json();
-
-      if (!data.success) {
-        addToast(data.message || 'Plan purchase failed', 'error');
-        return { success: false, message: data.message || 'Purchase failed' };
-      }
-
-      // Deduct coins & record real transaction
-      const newCoins = data.remainingCoins ?? Math.max(0, coins - cost);
-      setCoins(newCoins);
-
-      const newTx: Transaction = data.transaction || {
-        id: `tx-${Date.now()}`,
-        title: `Purchased YASHI HALLS ${targetPlan.toUpperCase()} Plan`,
-        date: 'Just now',
-        amount: -cost,
-        category: 'purchase',
-      };
-      setTransactions((prev) => [newTx, ...prev]);
-
-      const slots = targetPlan === 'business' ? 25 : 5;
-      setUser((prev) => {
-        const owned = prev.ownedPlans || ['mini'];
-        return {
-          ...prev,
-          plan: targetPlan,
-          botSlotsTotal: slots,
-          ownedPlans: owned.includes(targetPlan) ? owned : [...owned, targetPlan],
-        };
-      });
-
-      soundFX.playSuccess();
-      triggerConfetti();
-      addToast(`🎉 Successfully purchased YASHI HALLS ${targetPlan.toUpperCase()}! -${cost} coins deducted.`, 'success');
-
-      setPlanToPurchase(null);
-      await refreshBotStatus();
-
-      if (currentFirebaseUser) {
-        setDoc(doc(db, 'users', currentFirebaseUser.uid), { 
-          plan: targetPlan,
-          coins: newCoins,
-        }, { merge: true }).catch(() => {});
-      }
-
-      return { success: true, message: 'Plan purchased successfully' };
-    } catch (err: any) {
-      addToast(err?.message || 'Transaction error', 'error');
-      return { success: false, message: err?.message || 'Transaction error' };
-    }
+    setPlanToPurchase(null);
+    navigateToSubscription(targetPlan);
+    addToast(`Complete manual bank transfer to activate ${targetPlan.toUpperCase()} for 30 days.`, 'info');
+    return {
+      success: false,
+      message: 'Redirected to Manual Bank Transfer subscription checkout.',
+    };
   };
 
   const syncBotProfilePic = async (customLogoUrl?: string) => {
@@ -1467,7 +1510,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else {
         addToast(data.message || 'Profile picture sync is ready when bot connects.', 'info');
       }
-    } catch (err: any) {
+    } catch {
       addToast('Failed to sync profile picture', 'error');
     }
   };
@@ -1490,7 +1533,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const upgradeToPro = () => {
-    changePlan('pro');
+    navigateToSubscription('pro');
   };
 
   const resetAccountData = () => {
@@ -1519,9 +1562,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [userPurchaseRequests, setUserPurchaseRequests] = useState<PurchaseRequest[]>([]);
 
   const refreshUserPurchases = useCallback(async () => {
-    if (!user.email) return;
+    const token = authToken || getStoredSessionToken();
+    if (!user.email || !token) return;
     try {
-      const res = await fetch(`/api/purchase-requests/user/${encodeURIComponent(user.email)}`);
+      const res = await fetch(`/api/purchase-requests/user/${encodeURIComponent(user.email)}`, {
+        headers: withAuthHeaders(),
+      });
       if (res.ok) {
         const json = await res.json();
         if (json.success && Array.isArray(json.data)) {
@@ -1529,44 +1575,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      // Synchronize live customer profile from backend for newly approved coins and plans
-      const profileRes = await fetch(`/api/customer/profile/${encodeURIComponent(user.email)}`);
+      const profileRes = await fetch(`/api/customer/profile/${encodeURIComponent(user.email)}`, {
+        headers: withAuthHeaders(),
+      });
       if (profileRes.ok) {
         const profJson = await profileRes.json();
         if (profJson.success && profJson.customer) {
           const c = profJson.customer;
           if (typeof c.coins === 'number' && c.coins !== coins) {
             setCoins(c.coins);
-            if (currentFirebaseUser) {
-              setDoc(doc(db, 'users', currentFirebaseUser.uid), { coins: c.coins }, { merge: true }).catch(() => {});
-            }
-          }
-          if (c.plan && c.plan !== user.plan) {
-            setUser((prev) => ({
-              ...prev,
-              plan: c.plan,
-              ownedPlans: Array.from(new Set([...(prev.ownedPlans || ['mini']), c.plan])),
-              botSlotsTotal: c.plan === 'business' ? 25 : c.plan === 'pro' ? 5 : 1,
-            }));
-            if (currentFirebaseUser) {
-              setDoc(doc(db, 'users', currentFirebaseUser.uid), {
-                plan: c.plan,
-                ownedPlans: Array.from(new Set([...(user.ownedPlans || ['mini']), c.plan])),
-              }, { merge: true }).catch(() => {});
-            }
           }
         }
       }
     } catch {
       // ignore
     }
-  }, [user.email, coins, user.plan, currentFirebaseUser]);
+  }, [user.email, authToken, coins]);
 
   useEffect(() => {
-    if (isAuthenticated && user.email) {
+    if (isAuthenticated && authToken && user.email) {
       refreshUserPurchases();
     }
-  }, [isAuthenticated, user.email, refreshUserPurchases]);
+  }, [isAuthenticated, authToken, user.email, refreshUserPurchases]);
 
   const submitPurchaseRequest = async (item: {
     itemType: 'plan' | 'coin_pack';
@@ -1580,7 +1610,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       soundFX.playClick();
       const res = await fetch('/api/purchase-requests/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           customerId: currentFirebaseUser?.uid || `cust-${Date.now()}`,
           customerEmail: user.email,
@@ -1646,7 +1676,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         loginWithGoogleCredential,
         loginWithEmail,
         signupWithEmail,
-        loginAsDemo,
         logout,
         user,
         updateUser,
@@ -1705,7 +1734,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setOpenDeleteAccountModal,
         openEditBotModal,
         setOpenEditBotModal,
-        notifications,
+        notifications: mergedNotifications,
         markNotificationRead,
         markAllNotificationsRead,
         toasts,
@@ -1717,9 +1746,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncBotProfilePic,
         resetQuotas,
         resetAccountData,
+        authToken,
         isAdmin,
         adminWhatsappNumber,
         userPurchaseRequests,
+        subscriptionSummary,
+        subscriptionRequests,
+        billingConfig,
+        subscriptionNotifications,
+        selectedSubscriptionTier,
+        setSelectedSubscriptionTier,
+        navigateToSubscription,
+        refreshSubscription,
+        submitManualSubscriptionPayment,
+        markSubscriptionNotificationRead,
         submitPurchaseRequest,
         refreshUserPurchases,
         effectiveUserId,

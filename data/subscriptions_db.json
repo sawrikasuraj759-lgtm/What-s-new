@@ -1,0 +1,33 @@
+{
+  "bankDetails": {
+    "bankName": "Commercial Bank of Ceylon",
+    "accountName": "YASHI HALLS Cloud Holdings",
+    "accountNumber": "8001234567",
+    "branchName": "Colombo Main Branch",
+    "swiftOrCode": "CCEYLKLX",
+    "instructions": "Transfer the exact monthly LKR package amount to the bank account above, enter your bank transaction reference number, and upload a clear screenshot of the payment receipt."
+  },
+  "packagePricesLkr": {
+    "mini": 0,
+    "pro": 500,
+    "business": 1000
+  },
+  "subscriptions": {
+    "user_sawrikasuraj759_gmail_com": {
+      "userId": "user_sawrikasuraj759_gmail_com",
+      "email": "sawrikasuraj759@gmail.com",
+      "username": "Admin",
+      "plan": "mini",
+      "status": "FREE",
+      "activatedAt": null,
+      "expiresAt": null,
+      "downgradedAt": null,
+      "paymentReference": null,
+      "paymentRequestId": null,
+      "remindedMilestones": [],
+      "updatedAt": "2026-11-25T14:45:01.790Z"
+    }
+  },
+  "paymentRequests": [],
+  "notifications": []
+}

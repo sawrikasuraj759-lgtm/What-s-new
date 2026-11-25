@@ -26,6 +26,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { ThemeMode } from '../types';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 export const SettingsView: React.FC = () => {
   const { 
@@ -50,7 +51,9 @@ export const SettingsView: React.FC = () => {
   const [tokenSaved, setTokenSaved] = useState(false);
 
   React.useEffect(() => {
-    fetch('/api/voice-replies/customer')
+    fetch('/api/voice-replies/customer', {
+      headers: withAuthHeaders(),
+    })
       .then((res) => res.json())
       .then((data) => {
         if (data.success && typeof data.voiceAutoReplyEnabled === 'boolean') {
@@ -60,7 +63,7 @@ export const SettingsView: React.FC = () => {
       .catch(() => {});
 
     fetch('/api/bot/config', {
-      headers: { 'x-user-id': effectiveUserId },
+      headers: withAuthHeaders({ 'x-user-id': effectiveUserId }),
     })
       .then((res) => res.json())
       .then((data) => {
@@ -78,7 +81,7 @@ export const SettingsView: React.FC = () => {
     try {
       await fetch('/api/voice-replies/customer/toggle', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ enabled: nextState }),
       });
       addToast(
@@ -113,10 +116,10 @@ export const SettingsView: React.FC = () => {
     try {
       const res = await fetch('/api/bot/config', {
         method: 'POST',
-        headers: { 
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
           'x-user-id': effectiveUserId,
-        },
+        }),
         body: JSON.stringify({ 
           businessBotToken: businessBotToken.trim(),
           userId: effectiveUserId,

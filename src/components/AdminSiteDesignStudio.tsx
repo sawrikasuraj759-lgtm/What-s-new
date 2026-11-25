@@ -14,6 +14,7 @@ import {
   Copy
 } from 'lucide-react';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 interface SiteDesignConfig {
   brandName: string;
@@ -71,7 +72,7 @@ export const AdminSiteDesignStudio: React.FC<Props> = ({ adminEmail, addToast })
       setLoading(true);
       try {
         const res = await fetch('/api/admin/site-design', {
-          headers: { 'x-admin-email': adminEmail }
+          headers: withAuthHeaders()
         });
         if (res.ok) {
           const json = await res.json();
@@ -94,10 +95,7 @@ export const AdminSiteDesignStudio: React.FC<Props> = ({ adminEmail, addToast })
     try {
       const res = await fetch('/api/admin/site-design', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-email': adminEmail
-        },
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(design)
       });
       const json = await res.json();

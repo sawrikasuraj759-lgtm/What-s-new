@@ -1,17 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, Mail, Lock, User, ArrowRight, Sparkles, RefreshCw, AlertCircle, Copy, ExternalLink, Check } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight, Sparkles, RefreshCw, AlertCircle, Copy, ExternalLink, Check } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { APP_CONFIG } from '../data/initialData';
 import { soundFX } from '../utils/sound';
 import { firebaseConfig } from '../firebase';
 
 export const AuthScreen: React.FC = () => {
-  const { loginWithGoogle, loginWithGoogleCredential, loginWithEmail, signupWithEmail, loginAsDemo, isAuthLoading } = useApp();
+  const { loginWithGoogle, loginWithEmail, signupWithEmail, isAuthLoading } = useApp();
   const [tab, setTab] = useState<'signin' | 'signup'>('signin');
 
   // Sign In inputs
-  const [loginEmail, setLoginEmail] = useState('sawrikasuraj759@gmail.com');
+  const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
 
   // Sign Up inputs
@@ -31,13 +31,12 @@ export const AuthScreen: React.FC = () => {
 
     try {
       await loginWithGoogle();
-      // onAuthStateChanged in AppContext will automatically detect the user and set their real account!
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
       const msg = (err as { message?: string })?.message || '';
 
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setAuthError('Google Account එක select කල පසු Android Chrome මගින් popup එක වැසුනි. කරුණාකර පහත "Instant Login" බටනය click කර කෙලින්ම ඇතුළු වන්න.');
+        setAuthError('Google Sign-In popup was closed before completing. Please try again or use Email Sign-In below.');
       } else if (code === 'auth/popup-blocked') {
         setAuthError('Google Sign-In popup was blocked by your browser. Please allow popups for this site or use Email Sign-In below.');
       } else if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
@@ -56,11 +55,17 @@ export const AuthScreen: React.FC = () => {
     setIsSubmitting(true);
     setAuthError(null);
     try {
-      const emailToUse = (loginEmail || 'sawrikasuraj759@gmail.com').trim();
-      const passToUse = loginPassword || '123456';
-      await loginWithEmail(emailToUse, passToUse);
+      const emailToUse = loginEmail.trim();
+      if (!emailToUse || !loginPassword) {
+        setAuthError('Please enter your email address and password.');
+        return;
+      }
+      const ok = await loginWithEmail(emailToUse, loginPassword);
+      if (!ok) {
+        setAuthError('Invalid email or password. Please try again or create a new account.');
+      }
     } catch (err: unknown) {
-      loginAsDemo(loginEmail || 'sawrikasuraj759@gmail.com');
+      setAuthError((err as { message?: string })?.message || 'Sign-in failed. Please check your credentials.');
     } finally {
       setIsSubmitting(false);
     }
@@ -177,21 +182,6 @@ export const AuthScreen: React.FC = () => {
             )}
           </motion.button>
 
-          {/* Quick 1-Tap Access for Master Owner */}
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              loginAsDemo('sawrikasuraj759@gmail.com');
-            }}
-            className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 hover:from-emerald-500/30 hover:to-cyan-500/30 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)]"
-          >
-            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>⚡ Instant Owner Login (sawrikasuraj759@gmail.com)</span>
-          </motion.button>
-
           <div className="flex items-center gap-3 text-xs text-slate-500">
             <span className="flex-1 h-[1px] bg-[#1c2938]" />
             <span>or continue with email</span>
@@ -233,32 +223,12 @@ export const AuthScreen: React.FC = () => {
           </button>
         </div>
 
-        {/* Auth Error Banner & Smart Recovery */}
+        {/* Auth Error Banner */}
         {authError && (
           <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-3 text-xs text-rose-300">
             <div className="flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
               <div className="leading-relaxed font-medium">{authError}</div>
-            </div>
-
-            {/* Smart Recovery Button for Mobile iframe */}
-            <div className="pt-2 border-t border-rose-500/20 space-y-2">
-              <div className="text-[11px] text-slate-300">
-                Android Chrome හි AI Studio iframe තුල Google Popup එක වැසුනද, ඔබට පහතින් කෙලින්ම ඇතුළු විය හැක:
-              </div>
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                type="button"
-                onClick={() => {
-                  soundFX.playClick();
-                  loginAsDemo(loginEmail || 'sawrikasuraj759@gmail.com');
-                }}
-                className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg transition-all"
-              >
-                <span>⚡ Complete Sign-In as {loginEmail || 'sawrikasuraj759@gmail.com'}</span>
-                <ArrowRight className="w-4 h-4" />
-              </motion.button>
             </div>
 
             {authError.includes('Authorized Domains') && currentHostname && (
@@ -320,7 +290,7 @@ export const AuthScreen: React.FC = () => {
                     type="email"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="sawrikasuraj759@gmail.com"
+                    placeholder="you@example.com"
                     required
                     className="w-full bg-[#131d28] border border-[#233346] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-medium"
                   />
@@ -383,7 +353,7 @@ export const AuthScreen: React.FC = () => {
                     type="text"
                     value={signupName}
                     onChange={(e) => setSignupName(e.target.value)}
-                    placeholder="Sawrika Suraj"
+                    placeholder="Your Full Name"
                     required
                     className="w-full bg-[#131d28] border border-[#233346] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-medium"
                   />
@@ -400,7 +370,7 @@ export const AuthScreen: React.FC = () => {
                     type="email"
                     value={signupEmail}
                     onChange={(e) => setSignupEmail(e.target.value)}
-                    placeholder="sawrikasuraj759@gmail.com"
+                    placeholder="you@example.com"
                     required
                     className="w-full bg-[#131d28] border border-[#233346] rounded-xl pl-10 pr-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-medium"
                   />

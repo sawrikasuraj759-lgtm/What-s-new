@@ -13,6 +13,9 @@ import { BottomNav } from './components/BottomNav';
 import { WalletView } from './components/WalletView';
 import { SettingsView } from './components/SettingsView';
 import { DashboardView } from './components/DashboardView';
+import { ProDashboardView } from './components/ProDashboardView';
+import { BusinessDashboardView } from './components/BusinessDashboardView';
+import { SubscriptionPurchaseView } from './components/SubscriptionPurchaseView';
 import { DeploymentsView } from './components/DeploymentsView';
 import { BusinessBotView } from './components/BusinessBotView';
 import { TemplatesView } from './components/TemplatesView';
@@ -31,18 +34,78 @@ import { DeleteAccountModal } from './components/DeleteAccountModal';
 import { EditBotModal } from './components/EditBotModal';
 import { ToastContainer } from './components/ToastContainer';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { GuildConfigPortal } from './components/GuildConfigPortal';
 
 const MainAppContent: React.FC = () => {
-  const { isAuthenticated, activeTab } = useApp();
+  const { isAuthenticated, activeTab, user } = useApp();
 
-  // STRICT AUTHENTICATION GATE:
-  // "ලොග් වෙන්නෙ නැතුව සයිට් එකේ කිසි දෙයාක් කරන්න දෙන්න එපා"
+  // PUBLIC TOKEN-SCOPED CUSTOMER PORTAL (/guild-portal?order=YH-...&token=...)
+  const portalParams = React.useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    if (!window.location.pathname.startsWith('/guild-portal')) return null;
+    const sp = new URLSearchParams(window.location.search);
+    const order = (sp.get('order') || '').trim();
+    const token = (sp.get('token') || '').trim();
+    if (!order || !token) return null;
+    return { order, token };
+  }, []);
+
+  if (portalParams) {
+    return (
+      <GuildConfigPortal
+        orderId={portalParams.order}
+        token={portalParams.token}
+        onExitPreview={
+          isAuthenticated
+            ? () => {
+                window.history.pushState({}, '', '/');
+                window.location.reload();
+              }
+            : undefined
+        }
+      />
+    );
+  }
+
+  // STRICT AUTHENTICATION GATE
   if (!isAuthenticated) {
     return (
       <>
         <AuthScreen />
         <ToastContainer />
       </>
+    );
+  }
+
+  const isStandaloneBusinessDashboard =
+    user.plan === 'business' && activeTab === 'dashboard';
+
+  const renderDashboardByPlan = () => {
+    if (user.plan === 'business') {
+      return <BusinessDashboardView />;
+    }
+    if (user.plan === 'pro') {
+      return <ProDashboardView />;
+    }
+    return <DashboardView />;
+  };
+
+  if (isStandaloneBusinessDashboard) {
+    return (
+      <div className="min-h-screen bg-[#050507] text-[#F5EFE6] font-sans relative overflow-x-hidden">
+        <SidebarDrawer />
+        <BusinessDashboardView />
+        <DeployBotModal />
+        <CoinPurchaseModal />
+        <TerminalLogsModal />
+        <BillingModal />
+        <PlanPurchaseModal />
+        <SupportModal />
+        <InviteModal />
+        <DeleteAccountModal />
+        <EditBotModal />
+        <ToastContainer />
+      </div>
     );
   }
 
@@ -59,13 +122,16 @@ const MainAppContent: React.FC = () => {
       <main className="min-h-[calc(100vh-60px)] pb-20 relative z-10">
         <AnimatePresence mode="wait">
           <motion.div
-            key={activeTab}
+            key={`${activeTab}-${user.plan}`}
             initial={{ opacity: 0, y: 12, filter: 'blur(4px)' }}
             animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
             exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
-            transition={{ duration: 0.22, ease: 'easeOut' }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
           >
-            {activeTab === 'dashboard' && <DashboardView />}
+            {activeTab === 'dashboard' && renderDashboardByPlan()}
+            {(activeTab === 'subscription' || activeTab === 'billing' || activeTab === 'pricing') && (
+              <SubscriptionPurchaseView />
+            )}
             {activeTab === 'deployments' && <DeploymentsView />}
             {activeTab === 'business-bot' && <BusinessBotView />}
             {activeTab === 'templates' && <TemplatesView />}

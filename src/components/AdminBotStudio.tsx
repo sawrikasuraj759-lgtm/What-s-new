@@ -21,6 +21,7 @@ import {
   ToggleRight
 } from 'lucide-react';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 interface MenuCategoryRow {
   id: string;
@@ -133,7 +134,7 @@ export const AdminBotStudio: React.FC<Props> = ({ adminEmail, addToast }) => {
       setLoading(true);
       try {
         const res = await fetch('/api/admin/bot-studio', {
-          headers: { 'x-admin-email': adminEmail }
+          headers: withAuthHeaders()
         });
         if (res.ok) {
           const json = await res.json();
@@ -156,10 +157,7 @@ export const AdminBotStudio: React.FC<Props> = ({ adminEmail, addToast }) => {
     try {
       const res = await fetch('/api/admin/bot-studio', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-email': adminEmail
-        },
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(studio)
       });
       const json = await res.json();

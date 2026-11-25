@@ -2,12 +2,20 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "User account information, wallet balance, and plan",
+      "description": "User account information, wallet balance, and server-managed subscription metadata",
       "type": "object",
       "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Immutable Firebase UID owner identifier",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "username": {
           "type": "string",
           "description": "User display name",
+          "minLength": 1,
           "maxLength": 64
         },
         "email": {
@@ -17,12 +25,26 @@
         },
         "plan": {
           "type": "string",
-          "description": "Plan tier (mini, pro, or business)",
+          "description": "Active subscription tier (mini, pro, or business)",
           "enum": ["mini", "pro", "business"]
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "description": "Subscription lifecycle status",
+          "enum": ["FREE", "ACTIVE", "EXPIRED"]
+        },
+        "subscriptionExpiresAt": {
+          "type": "string",
+          "description": "ISO timestamp when paid subscription expires",
+          "maxLength": 64
         },
         "coins": {
           "type": "number",
           "description": "User coin balance"
+        },
+        "isSuspended": {
+          "type": "boolean",
+          "description": "Admin suspension flag"
         },
         "botSlotsUsed": {
           "type": "number",
@@ -34,19 +56,30 @@
         },
         "createdAt": {
           "type": "string",
-          "description": "ISO timestamp of creation"
+          "description": "Server timestamp of creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Server timestamp of last update"
         }
       },
-      "required": ["username", "email", "plan", "coins"]
+      "required": ["username", "email", "plan", "coins", "createdAt", "updatedAt"]
     },
     "BotEntity": {
       "title": "BotEntity",
       "description": "Deployed bot instance metadata and configuration",
       "type": "object",
       "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Immutable owner UID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "name": {
           "type": "string",
           "description": "Bot instance name",
+          "minLength": 1,
           "maxLength": 64
         },
         "templateName": {
@@ -66,10 +99,41 @@
         },
         "createdAt": {
           "type": "string",
-          "description": "Creation timestamp"
+          "description": "Creation server timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Update server timestamp"
         }
       },
-      "required": ["name", "status"]
+      "required": ["ownerId", "name", "status", "createdAt", "updatedAt"]
+    },
+    "TransactionEntity": {
+      "title": "TransactionEntity",
+      "description": "User wallet ledger transaction record",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Owner UID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Transaction title",
+          "maxLength": 120
+        },
+        "amount": {
+          "type": "number",
+          "description": "Delta amount"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Server timestamp"
+        }
+      },
+      "required": ["ownerId", "title", "amount", "createdAt"]
     },
     "PurchaseRequestEntity": {
       "title": "PurchaseRequestEntity",
@@ -79,7 +143,8 @@
         "customerId": {
           "type": "string",
           "description": "Customer Firebase UID",
-          "maxLength": 128
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "customerEmail": {
           "type": "string",
@@ -117,10 +182,110 @@
         },
         "createdAt": {
           "type": "string",
-          "description": "Creation timestamp"
+          "description": "Creation server timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Update server timestamp"
         }
       },
-      "required": ["customerId", "customerEmail", "itemType", "priceLkr"]
+      "required": ["customerId", "customerEmail", "itemType", "itemName", "priceLkr", "status", "createdAt", "updatedAt"]
+    },
+    "SubscriptionPaymentRequest": {
+      "title": "SubscriptionPaymentRequest",
+      "description": "Manual bank transfer subscription request metadata (receipt file stored securely on server disk)",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customerEmail": {
+          "type": "string",
+          "description": "Customer email",
+          "maxLength": 128
+        },
+        "packageId": {
+          "type": "string",
+          "description": "Requested monthly tier",
+          "enum": ["pro", "business"]
+        },
+        "expectedAmountLkr": {
+          "type": "number",
+          "description": "Expected LKR amount"
+        },
+        "transactionReference": {
+          "type": "string",
+          "description": "Bank transaction reference",
+          "minLength": 4,
+          "maxLength": 80
+        },
+        "paymentDate": {
+          "type": "string",
+          "description": "Date of bank transfer YYYY-MM-DD",
+          "maxLength": 20
+        },
+        "receiptPath": {
+          "type": "string",
+          "description": "Server API receipt reference path",
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "description": "Approval workflow status",
+          "enum": ["PENDING", "APPROVED", "REJECTED"]
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Submission server timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Review server timestamp"
+        }
+      },
+      "required": ["userId", "customerEmail", "packageId", "expectedAmountLkr", "transactionReference", "paymentDate", "status", "createdAt", "updatedAt"]
+    },
+    "PlatformBillingConfig": {
+      "title": "PlatformBillingConfig",
+      "description": "Public read-only bank account and package price configuration managed by admins",
+      "type": "object",
+      "properties": {
+        "bankName": { "type": "string", "maxLength": 120 },
+        "accountName": { "type": "string", "maxLength": 120 },
+        "accountNumber": { "type": "string", "maxLength": 60 },
+        "branchName": { "type": "string", "maxLength": 120 },
+        "proPriceLkr": { "type": "number" },
+        "businessPriceLkr": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["bankName", "accountName", "accountNumber", "proPriceLkr", "businessPriceLkr", "updatedAt"]
+    },
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Authorized administrator registry document",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["ADMIN"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "AdminAuditLog": {
+      "title": "AdminAuditLog",
+      "description": "Immutable admin security and approval audit log",
+      "type": "object",
+      "properties": {
+        "adminEmail": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 80 },
+        "details": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["adminEmail", "action", "details", "createdAt"]
     }
   },
   "firestore": {
@@ -132,9 +297,29 @@
       "schema": "BotEntity",
       "description": "Stores individual user bot deployments strictly by Firebase UID"
     },
+    "/users/{userId}/transactions/{txId}": {
+      "schema": "TransactionEntity",
+      "description": "Stores user wallet transaction history"
+    },
     "/purchase_requests/{reqId}": {
       "schema": "PurchaseRequestEntity",
       "description": "Stores customer purchase requests accessible only by owner customer or admin"
+    },
+    "/subscription_requests/{requestId}": {
+      "schema": "SubscriptionPaymentRequest",
+      "description": "Manual bank transfer payment requests (metadata only, admin-approved)"
+    },
+    "/platform_config/{configId}": {
+      "schema": "PlatformBillingConfig",
+      "description": "Bank details and monthly LKR package prices readable by signed-in users, writable only by admin"
+    },
+    "/admins/{uid}": {
+      "schema": "AdminMarker",
+      "description": "Authorized admin lookup documents"
+    },
+    "/admin_audit_logs/{logId}": {
+      "schema": "AdminAuditLog",
+      "description": "Admin action audit trail"
     }
   }
 }

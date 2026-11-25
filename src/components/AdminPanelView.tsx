@@ -28,26 +28,47 @@ import {
   Crown,
   Mic,
   Palette,
-  Cpu
+  Cpu,
+  CreditCard,
+  Eye,
+  Landmark,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 import { 
   AdminCustomer, 
   PurchaseRequest, 
   AdminAuditLog, 
-  AdminOverviewStats 
+  AdminOverviewStats,
+  AdminSubscriptionOverview,
+  ManualPaymentRequestItem
 } from '../types';
 import { VoiceAutoRepliesAdmin } from './VoiceAutoRepliesAdmin';
 import { AdminSiteDesignStudio } from './AdminSiteDesignStudio';
 import { AdminBotStudio } from './AdminBotStudio';
-import { db, collection, getDocs, updateDoc, doc, getDoc } from '../firebase';
+import { auth, db, collection, getDocs, updateDoc, doc, getDoc, OperationType, handleFirestoreError } from '../firebase';
+
+type AdminTab =
+  | 'overview'
+  | 'subscriptions'
+  | 'paired-bots'
+  | 'bot-studio'
+  | 'voice'
+  | 'customers'
+  | 'purchases'
+  | 'wallet'
+  | 'plans'
+  | 'site-design'
+  | 'settings'
+  | 'audit';
 
 export const AdminPanelView: React.FC = () => {
-  const { user, isAdmin, addToast } = useApp();
+  const { user, isAdmin, addToast, refreshSubscription } = useApp();
 
-  const [activeTab, setActiveTab] = useState<AdminTab>('paired-bots');
+  const [activeTab, setActiveTab] = useState<AdminTab>('subscriptions');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [stats, setStats] = useState<AdminOverviewStats | null>(null);
   const [customers, setCustomers] = useState<AdminCustomer[]>([]);
@@ -58,6 +79,34 @@ export const AdminPanelView: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
+
+  // Subscriptions & Manual Bank Transfer Admin State
+  const [subOverview, setSubOverview] = useState<AdminSubscriptionOverview | null>(null);
+  const [subSection, setSubSection] = useState<'requests' | 'directory' | 'config'>('requests');
+  const [subReqFilter, setSubReqFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING');
+  const [subDirFilter, setSubDirFilter] = useState<'ALL' | 'ACTIVE' | 'EXPIRED'>('ALL');
+  const [subSearch, setSubSearch] = useState('');
+  const [reviewingSubId, setReviewingSubId] = useState<string | null>(null);
+  const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
+  const [rejectReasonInput, setRejectReasonInput] = useState('');
+  const [downgradingId, setDowngradingId] = useState<string | null>(null);
+
+  // Authenticated Receipt Viewer Modal
+  const [viewingSubReq, setViewingSubReq] = useState<ManualPaymentRequestItem | null>(null);
+  const [receiptBlobUrl, setReceiptBlobUrl] = useState<string | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptLoadError, setReceiptLoadError] = useState<string | null>(null);
+
+  // Bank Details & Monthly LKR Pricing Form
+  const [bankName, setBankName] = useState('Bank of Ceylon (BOC)');
+  const [accountName, setAccountName] = useState('YASHI HALLS');
+  const [accountNumber, setAccountNumber] = useState('0000000000');
+  const [branchName, setBranchName] = useState('Colombo Main Branch');
+  const [swiftOrCode, setSwiftOrCode] = useState('');
+  const [bankInstructions, setBankInstructions] = useState('');
+  const [proPriceLkr, setProPriceLkr] = useState<number>(500);
+  const [businessPriceLkr, setBusinessPriceLkr] = useState<number>(1000);
+  const [savingSubConfig, setSavingSubConfig] = useState(false);
 
   // Manual Coin Add / Deduct Modal State
   const [coinModalOpen, setCoinModalOpen] = useState(false);
@@ -77,23 +126,30 @@ export const AdminPanelView: React.FC = () => {
   const [proCoinPrice, setProCoinPrice] = useState(10);
   const [businessCoinPrice, setBusinessCoinPrice] = useState(30);
 
+  useEffect(() => {
+    return () => {
+      if (receiptBlobUrl) {
+        URL.revokeObjectURL(receiptBlobUrl);
+      }
+    };
+  }, [receiptBlobUrl]);
+
   const fetchAdminData = useCallback(async () => {
     if (!isAdmin) return;
     setIsLoading(true);
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
-      const headers = {
-        'x-admin-email': adminEmail,
+      const headers = withAuthHeaders({
         'Content-Type': 'application/json',
-      };
+      });
 
-      const [resOverview, resCust, resPurch, resLogs, resSettings, resPaired] = await Promise.all([
+      const [resOverview, resCust, resPurch, resLogs, resSettings, resPaired, resSubOverview] = await Promise.all([
         fetch('/api/admin/overview', { headers }),
         fetch('/api/admin/customers', { headers }),
         fetch('/api/admin/purchase-requests', { headers }),
         fetch('/api/admin/audit-logs', { headers }),
         fetch('/api/admin/settings', { headers }),
         fetch('/api/admin/paired-bots', { headers }),
+        fetch('/api/subscriptions/admin/overview', { headers }),
       ]);
 
       if (resOverview.ok) {
@@ -106,6 +162,25 @@ export const AdminPanelView: React.FC = () => {
           setPairedBots(d.data);
         }
       }
+      if (resSubOverview && resSubOverview.ok) {
+        const d = await resSubOverview.json();
+        if (d.success && d.data) {
+          setSubOverview(d.data);
+          const cfg = d.data.config;
+          if (cfg?.bankDetails) {
+            setBankName(cfg.bankDetails.bankName || '');
+            setAccountName(cfg.bankDetails.accountName || '');
+            setAccountNumber(cfg.bankDetails.accountNumber || '');
+            setBranchName(cfg.bankDetails.branchName || '');
+            setSwiftOrCode(cfg.bankDetails.swiftOrCode || '');
+            setBankInstructions(cfg.bankDetails.instructions || '');
+          }
+          if (cfg?.packagePricesLkr) {
+            setProPriceLkr(Number(cfg.packagePricesLkr.pro) || 500);
+            setBusinessPriceLkr(Number(cfg.packagePricesLkr.business) || 1000);
+          }
+        }
+      }
       
       let loadedCustomers: AdminCustomer[] = [];
       if (resCust.ok) {
@@ -115,55 +190,59 @@ export const AdminPanelView: React.FC = () => {
         }
       }
 
-      // Fetch Real Live Customer Data from Firestore & merge with backend directory
-      try {
-        const usersSnap = await getDocs(collection(db, 'users'));
-        const customerById = new Map<string, AdminCustomer>();
-        loadedCustomers.forEach((c) => {
-          if (c.id) customerById.set(c.id, c);
-          if (c.email) customerById.set(c.email.trim().toLowerCase(), c);
-        });
+      // Fetch Live Customer Data from Firestore only when verified Firebase session is present
+      if (auth.currentUser?.emailVerified) {
+        try {
+          const usersSnap = await getDocs(collection(db, 'users'));
+          const customerById = new Map<string, AdminCustomer>();
+          loadedCustomers.forEach((c) => {
+            if (c.id) customerById.set(c.id, c);
+            if (c.email) customerById.set(c.email.trim().toLowerCase(), c);
+          });
 
-        usersSnap.forEach((docSnap) => {
-          const d = docSnap.data();
-          const email = (d.email || '').trim().toLowerCase();
-          const uid = docSnap.id;
-          const existing = customerById.get(uid) || (email ? customerById.get(email) : undefined);
-          const resolvedName = d.username || d.displayName || d.name || (existing?.username && existing.username !== 'Customer' ? existing.username : '') || (email ? email.split('@')[0] : 'Customer');
+          usersSnap.forEach((docSnap) => {
+            const d = docSnap.data();
+            const email = (d.email || '').trim().toLowerCase();
+            const uid = docSnap.id;
+            const existing = customerById.get(uid) || (email ? customerById.get(email) : undefined);
+            const resolvedName = d.username || d.displayName || d.name || (existing?.username && existing.username !== 'Customer' ? existing.username : '') || (email ? email.split('@')[0] : 'Customer');
 
-          const liveCust: AdminCustomer = {
-            id: uid,
-            email: d.email || (existing?.email ?? 'Unknown'),
-            username: resolvedName,
-            plan: d.plan || existing?.plan || 'mini',
-            coins: typeof d.coins === 'number' ? d.coins : (existing?.coins ?? 5),
-            isSuspended: Boolean(d.isSuspended ?? existing?.isSuspended),
-            botStatus: existing?.botStatus || (d.botStatus ?? 'none'),
-            createdAt: d.createdAt || existing?.createdAt || new Date().toISOString(),
-            lastActive: d.lastActive || existing?.lastActive || new Date().toISOString(),
-            adminNote: d.adminNote || existing?.adminNote,
-            isOnline: Boolean(existing?.isOnline || d.botStatus === 'online'),
-            mediaUsed: d.mediaUsed || existing?.mediaUsed || 0,
-            aiUsed: d.aiUsed || existing?.aiUsed || 0,
-          };
-          customerById.set(uid, liveCust);
-
-          // Proactively register into backend admin database
-          fetch('/api/admin/customers/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            const liveCust: AdminCustomer = {
               id: uid,
-              email: liveCust.email,
-              username: liveCust.username,
-              plan: liveCust.plan,
-              coins: liveCust.coins,
-            }),
-          }).catch(() => {});
-        });
+              email: d.email || (existing?.email ?? 'Unknown'),
+              username: resolvedName,
+              plan: existing?.plan || d.plan || 'mini',
+              coins: typeof d.coins === 'number' ? d.coins : (existing?.coins ?? 5),
+              isSuspended: Boolean(d.isSuspended ?? existing?.isSuspended),
+              botStatus: existing?.botStatus || (d.botStatus ?? 'none'),
+              createdAt: d.createdAt || existing?.createdAt || new Date().toISOString(),
+              lastActive: d.lastActive || existing?.lastActive || new Date().toISOString(),
+              adminNote: d.adminNote || existing?.adminNote,
+              isOnline: Boolean(existing?.isOnline || d.botStatus === 'online'),
+              mediaUsed: d.mediaUsed || existing?.mediaUsed || 0,
+              aiUsed: d.aiUsed || existing?.aiUsed || 0,
+            };
+            customerById.set(uid, liveCust);
 
-        setCustomers(Array.from(customerById.values()));
-      } catch (err) {
+            fetch('/api/admin/customers/sync', {
+              method: 'POST',
+              headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                id: uid,
+                email: liveCust.email,
+                username: liveCust.username,
+                plan: liveCust.plan,
+                coins: liveCust.coins,
+              }),
+            }).catch(() => {});
+          });
+
+          setCustomers(Array.from(customerById.values()));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.LIST, 'users', true);
+          setCustomers(loadedCustomers);
+        }
+      } else {
         setCustomers(loadedCustomers);
       }
 
@@ -192,7 +271,7 @@ export const AdminPanelView: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [isAdmin, user.email, addToast]);
+  }, [isAdmin, addToast]);
 
   useEffect(() => {
     fetchAdminData();
@@ -223,13 +302,11 @@ export const AdminPanelView: React.FC = () => {
     soundFX.playClick();
 
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
       const res = await fetch('/api/admin/coins/adjust', {
         method: 'POST',
-        headers: {
-          'x-admin-email': adminEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           customerId: targetCustomer.id,
           action: coinAction,
@@ -244,13 +321,12 @@ export const AdminPanelView: React.FC = () => {
         addToast(data.message, 'success');
         setCoinModalOpen(false);
 
-        // Update Firestore directly if customer exists
-        try {
-          if (targetCustomer.id && targetCustomer.id.length > 5 && typeof data.newBalance === 'number') {
+        if (auth.currentUser?.emailVerified && targetCustomer.id && targetCustomer.id.length > 5 && typeof data.newBalance === 'number') {
+          try {
             await updateDoc(doc(db, 'users', targetCustomer.id), { coins: data.newBalance });
+          } catch (fErr) {
+            handleFirestoreError(fErr, OperationType.UPDATE, `users/${targetCustomer.id}`, true);
           }
-        } catch {
-          // fallback
         }
 
         await fetchAdminData();
@@ -269,13 +345,11 @@ export const AdminPanelView: React.FC = () => {
   const handleToggleSuspend = async (cust: AdminCustomer) => {
     soundFX.playClick();
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
       const res = await fetch('/api/admin/customers/suspend', {
         method: 'POST',
-        headers: {
-          'x-admin-email': adminEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           customerId: cust.id,
           isSuspended: !cust.isSuspended,
@@ -285,12 +359,13 @@ export const AdminPanelView: React.FC = () => {
       if (data.success) {
         addToast(`Customer ${cust.email} ${cust.isSuspended ? 'unsuspended' : 'suspended'}!`, 'info');
 
-        // Update Firestore user document
-        try {
-          if (cust.id && cust.id.length > 5) {
+        if (auth.currentUser?.emailVerified && cust.id && cust.id.length > 5) {
+          try {
             await updateDoc(doc(db, 'users', cust.id), { isSuspended: !cust.isSuspended });
+          } catch (fErr) {
+            handleFirestoreError(fErr, OperationType.UPDATE, `users/${cust.id}`, true);
           }
-        } catch {}
+        }
 
         await fetchAdminData();
       }
@@ -302,10 +377,9 @@ export const AdminPanelView: React.FC = () => {
   const handleDeleteCustomer = async (cust: AdminCustomer) => {
     soundFX.playClick();
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
       const res = await fetch(`/api/admin/customers/${cust.id}`, {
         method: 'DELETE',
-        headers: { 'x-admin-email': adminEmail },
+        headers: withAuthHeaders(),
       });
       const data = await res.json();
       if (data.success) {
@@ -323,13 +397,12 @@ export const AdminPanelView: React.FC = () => {
     setFulfillingId(req.id);
 
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
+      const adminEmail = user.email || 'admin';
       const res = await fetch('/api/admin/purchase-requests/fulfill', {
         method: 'POST',
-        headers: {
-          'x-admin-email': adminEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           requestId: req.id,
           action,
@@ -342,8 +415,7 @@ export const AdminPanelView: React.FC = () => {
         soundFX.playSuccess();
         addToast(data.message || `Purchase request ${action === 'APPROVE' ? 'approved' : 'rejected'} successfully!`, 'success');
 
-        // Direct Firestore Customer Sync: If approved, update user coins and plan in Firestore!
-        if (action === 'APPROVE' && req.customerId) {
+        if (action === 'APPROVE' && req.customerId && auth.currentUser?.emailVerified) {
           try {
             const uRef = doc(db, 'users', req.customerId);
             const uSnap = await getDoc(uRef);
@@ -363,7 +435,7 @@ export const AdminPanelView: React.FC = () => {
               }
             }
           } catch (fErr) {
-            console.warn('Could not update Firestore user directly:', fErr);
+            handleFirestoreError(fErr, OperationType.UPDATE, `users/${req.customerId}`, true);
           }
         }
 
@@ -382,13 +454,11 @@ export const AdminPanelView: React.FC = () => {
     e.preventDefault();
     soundFX.playClick();
     try {
-      const adminEmail = user.email || 'sawrikasuraj759@gmail.com';
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
-        headers: {
-          'x-admin-email': adminEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           storeName,
           adminWhatsapp,
@@ -408,6 +478,142 @@ export const AdminPanelView: React.FC = () => {
     } catch {
       addToast('Failed to save settings', 'error');
     }
+  };
+
+  const handleReviewSubscriptionRequest = async (
+    req: ManualPaymentRequestItem,
+    action: 'APPROVE' | 'REJECT',
+    reason?: string
+  ) => {
+    soundFX.playClick();
+    setReviewingSubId(req.id);
+    try {
+      const res = await fetch(`/api/subscriptions/admin/requests/${req.id}/review`, {
+        method: 'POST',
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action,
+          rejectionReason: action === 'REJECT' ? reason || 'Payment receipt could not be verified' : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        soundFX.playSuccess();
+        addToast(
+          data.message ||
+            (action === 'APPROVE'
+              ? `${req.packageId.toUpperCase()} activated for 30 days`
+              : 'Payment request rejected'),
+          'success'
+        );
+        setRejectingReqId(null);
+        setRejectReasonInput('');
+        await Promise.all([fetchAdminData(), refreshSubscription()]);
+      } else {
+        addToast(data.message || 'Failed to review payment request', 'error');
+      }
+    } catch {
+      addToast('Server error reviewing payment request', 'error');
+    } finally {
+      setReviewingSubId(null);
+    }
+  };
+
+  const handleDowngradeSubscription = async (userIdOrEmail: string) => {
+    soundFX.playClick();
+    setDowngradingId(userIdOrEmail);
+    try {
+      const res = await fetch('/api/subscriptions/admin/downgrade', {
+        method: 'POST',
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ userIdOrEmail }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        soundFX.playSuccess();
+        addToast(data.message || 'Account downgraded to MINI', 'success');
+        await Promise.all([fetchAdminData(), refreshSubscription()]);
+      } else {
+        addToast(data.message || 'Failed to downgrade account', 'error');
+      }
+    } catch {
+      addToast('Server error downgrading account', 'error');
+    } finally {
+      setDowngradingId(null);
+    }
+  };
+
+  const handleSaveSubscriptionConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    soundFX.playClick();
+    setSavingSubConfig(true);
+    try {
+      const res = await fetch('/api/subscriptions/admin/config', {
+        method: 'POST',
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          bankDetails: {
+            bankName: bankName.trim(),
+            accountName: accountName.trim(),
+            accountNumber: accountNumber.trim(),
+            branchName: branchName.trim(),
+            swiftOrCode: swiftOrCode.trim(),
+            instructions: bankInstructions.trim(),
+          },
+          packagePricesLkr: {
+            mini: 0,
+            pro: Number(proPriceLkr) || 500,
+            business: Number(businessPriceLkr) || 1000,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        soundFX.playSuccess();
+        addToast('Bank account details & monthly package prices saved!', 'success');
+        await Promise.all([fetchAdminData(), refreshSubscription()]);
+      } else {
+        addToast(data.message || 'Failed to save billing configuration', 'error');
+      }
+    } catch {
+      addToast('Server error saving billing configuration', 'error');
+    } finally {
+      setSavingSubConfig(false);
+    }
+  };
+
+  const handleViewSubscriptionReceipt = async (req: ManualPaymentRequestItem) => {
+    soundFX.playClick();
+    if (receiptBlobUrl) {
+      URL.revokeObjectURL(receiptBlobUrl);
+      setReceiptBlobUrl(null);
+    }
+    setViewingSubReq(req);
+    setReceiptLoading(true);
+    setReceiptLoadError(null);
+    try {
+      const res = await fetch(req.receiptUrl, {
+        headers: withAuthHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(`Unable to fetch receipt (${res.status})`);
+      }
+      const blob = await res.blob();
+      setReceiptBlobUrl(URL.createObjectURL(blob));
+    } catch (err: any) {
+      setReceiptLoadError(err?.message || 'Failed to load receipt image.');
+    } finally {
+      setReceiptLoading(false);
+    }
+  };
+
+  const closeReceiptModal = () => {
+    if (receiptBlobUrl) {
+      URL.revokeObjectURL(receiptBlobUrl);
+      setReceiptBlobUrl(null);
+    }
+    setViewingSubReq(null);
+    setReceiptLoadError(null);
   };
 
   const filteredCustomers = customers.filter((c) => {
@@ -430,12 +636,20 @@ export const AdminPanelView: React.FC = () => {
   });
 
   const pendingCount = purchases.filter((p) => p.status === 'PENDING').length;
+  const subPendingCount = subOverview?.revenue?.pendingCount ?? 0;
 
   const menuSections = [
     {
       title: 'MAIN',
       items: [
         { id: 'overview' as AdminTab, label: 'Dashboard', icon: Activity, badge: 'LIVE', badgeClass: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' },
+        {
+          id: 'subscriptions' as AdminTab,
+          label: 'Subscriptions & Bank',
+          icon: CreditCard,
+          badge: subPendingCount > 0 ? `${subPendingCount} PENDING` : 'LKR',
+          badgeClass: subPendingCount > 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+        },
       ],
     },
     {
@@ -445,7 +659,7 @@ export const AdminPanelView: React.FC = () => {
         { id: 'bot-studio' as AdminTab, label: 'Bot & Baileys Studio', icon: Bot, badge: 'CLUSTER', badgeClass: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
         { id: 'voice' as AdminTab, label: 'Voice Auto-Replies', icon: Mic, badge: 'AUDIO', badgeClass: 'bg-pink-500/20 text-pink-300 border-pink-500/40' },
         { id: 'customers' as AdminTab, label: 'Users & Customers', icon: Users, badge: `${customers.length}`, badgeClass: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' },
-        { id: 'purchases' as AdminTab, label: 'Customer Orders', icon: ShoppingBag, badge: pendingCount > 0 ? `${pendingCount} PENDING` : '0', badgeClass: pendingCount > 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse' : 'bg-slate-800 text-slate-400' },
+        { id: 'purchases' as AdminTab, label: 'Customer Orders', icon: ShoppingBag, badge: pendingCount > 0 ? `${pendingCount} PENDING` : '0', badgeClass: pendingCount > 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-800 text-slate-400' },
         { id: 'wallet' as AdminTab, label: 'Coins & Wallet Hub', icon: Coins, badge: 'GRANT/DEBIT', badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
         { id: 'plans' as AdminTab, label: 'Plan Pricing Matrix', icon: Tag, badge: 'MINI/PRO', badgeClass: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
         { id: 'site-design' as AdminTab, label: 'Site Design & CSS', icon: Palette, badge: 'STUDIO', badgeClass: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
@@ -693,40 +907,540 @@ export const AdminPanelView: React.FC = () => {
             <div className="p-5 rounded-3xl bg-[#081220] border border-[#15273f] space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <ShoppingBag className="w-4 h-4 text-amber-400" />
-                  <span>Pending Approval Queue</span>
+                  <CreditCard className="w-4 h-4 text-amber-400" />
+                  <span>Subscription Revenue &amp; Pending Receipts</span>
                 </h3>
-                <span className="text-xs font-mono text-cyan-400 cursor-pointer" onClick={() => setActiveTab('purchases')}>
-                  View all →
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('subscriptions')}
+                  className="text-xs font-mono text-cyan-400 hover:underline cursor-pointer"
+                >
+                  Open Approvals →
+                </button>
               </div>
 
-              {purchases.filter(p => p.status === 'PENDING').length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-500 font-mono">
-                  No pending manual purchase requests. All caught up!
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="p-3 rounded-xl bg-[#0c1828] border border-white/10">
+                  <div className="text-slate-400">Total Subscription Revenue</div>
+                  <div className="text-lg font-bold font-mono tabular-nums text-amber-300 mt-0.5">
+                    LKR {(subOverview?.revenue?.totalRevenueLkr ?? 0).toLocaleString()}
+                  </div>
                 </div>
-              ) : (
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {purchases.filter(p => p.status === 'PENDING').slice(0, 3).map((req) => (
-                    <div key={req.id} className="p-3 rounded-xl bg-[#0e1c2d] border border-cyan-500/30 flex items-center justify-between text-xs">
-                      <div>
-                        <div className="font-bold text-white">{req.itemName}</div>
-                        <div className="text-[11px] text-slate-400 font-mono">{req.customerEmail} · {req.priceFormatted}</div>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => handleFulfillPurchase(req, 'APPROVE')}
-                          className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[10px]"
-                        >
-                          Approve
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="p-3 rounded-xl bg-[#0c1828] border border-white/10">
+                  <div className="text-slate-400">Pending Bank Receipts</div>
+                  <div className="text-lg font-bold font-mono tabular-nums text-cyan-300 mt-0.5">
+                    {subOverview?.revenue?.pendingCount ?? 0}
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB: SUBSCRIPTIONS & MANUAL BANK TRANSFER HUB */}
+      {activeTab === 'subscriptions' && (
+        <div className="space-y-5">
+          {/* Revenue & Active/Expired KPIs */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="p-4 rounded-2xl bg-[#09121e] border border-[#17273d] space-y-1">
+              <span className="text-[11px] text-slate-400">Total Revenue</span>
+              <div className="text-2xl font-bold font-mono tabular-nums text-amber-300">
+                LKR {(subOverview?.revenue?.totalRevenueLkr ?? 0).toLocaleString()}
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {subOverview?.revenue?.approvedCount ?? 0} approved payments
+              </span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-[#09121e] border border-cyan-500/30 space-y-1">
+              <span className="text-[11px] text-slate-400">PRO Subscriptions</span>
+              <div className="text-2xl font-bold font-mono tabular-nums text-cyan-300">
+                LKR {(subOverview?.revenue?.proRevenueLkr ?? 0).toLocaleString()}
+              </div>
+              <span className="text-[11px] text-cyan-400 font-mono tabular-nums">
+                {subOverview?.revenue?.proActiveCount ?? 0} active accounts
+              </span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-[#09121e] border border-amber-500/30 space-y-1">
+              <span className="text-[11px] text-slate-400">BUSINESS Subscriptions</span>
+              <div className="text-2xl font-bold font-mono tabular-nums text-[#FBBF24]">
+                LKR {(subOverview?.revenue?.businessRevenueLkr ?? 0).toLocaleString()}
+              </div>
+              <span className="text-[11px] text-amber-300 font-mono tabular-nums">
+                {subOverview?.revenue?.businessActiveCount ?? 0} active accounts
+              </span>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-[#09121e] border border-[#17273d] space-y-1">
+              <span className="text-[11px] text-slate-400">Pending &amp; Expired</span>
+              <div className="text-2xl font-bold font-mono tabular-nums text-white">
+                {subOverview?.revenue?.pendingCount ?? 0} <span className="text-xs font-normal text-slate-400">pending</span>
+              </div>
+              <span className="text-[11px] text-rose-400 font-mono tabular-nums">
+                {subOverview?.revenue?.expiredCount ?? 0} expired
+              </span>
+            </div>
+          </div>
+
+          {/* Sub-section Switcher */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
+            <button
+              type="button"
+              onClick={() => setSubSection('requests')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                subSection === 'requests'
+                  ? 'bg-cyan-500 text-slate-950'
+                  : 'bg-[#09121e] text-slate-300 border border-[#17273d]'
+              }`}
+            >
+              Payment Requests ({subOverview?.requests?.length ?? 0})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubSection('directory')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                subSection === 'directory'
+                  ? 'bg-cyan-500 text-slate-950'
+                  : 'bg-[#09121e] text-slate-300 border border-[#17273d]'
+              }`}
+            >
+              Active &amp; Expired Subscriptions ({subOverview?.subscriptions?.length ?? 0})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubSection('config')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                subSection === 'config'
+                  ? 'bg-amber-400 text-slate-950'
+                  : 'bg-[#09121e] text-slate-300 border border-[#17273d]'
+              }`}
+            >
+              Bank Account &amp; Package Prices
+            </button>
+          </div>
+
+          {/* Sub-section 1: Manual Bank Transfer Approvals Queue */}
+          {subSection === 'requests' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setSubReqFilter(st)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold whitespace-nowrap shrink-0 cursor-pointer ${
+                        subReqFilter === st
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'bg-[#09121e] text-slate-400 border border-[#17273d]'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#09121e] border border-[#162740] rounded-xl px-3 py-2 text-xs text-white sm:w-72">
+                  <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <input
+                    type="text"
+                    value={subSearch}
+                    onChange={(e) => setSubSearch(e.target.value)}
+                    placeholder="Search email, order, tx ref..."
+                    className="bg-transparent flex-1 focus:outline-none text-white"
+                  />
+                </div>
+              </div>
+
+              {(() => {
+                const q = subSearch.trim().toLowerCase();
+                const list = (subOverview?.requests || []).filter((r) => {
+                  if (subReqFilter !== 'ALL' && r.status !== subReqFilter) return false;
+                  if (!q) return true;
+                  return (
+                    r.customerEmail.toLowerCase().includes(q) ||
+                    r.customerName.toLowerCase().includes(q) ||
+                    r.orderRef.toLowerCase().includes(q) ||
+                    r.transactionReference.toLowerCase().includes(q)
+                  );
+                });
+
+                if (list.length === 0) {
+                  return (
+                    <div className="p-10 text-center text-xs text-slate-400 rounded-2xl bg-[#081220] border border-[#15273f]">
+                      No manual bank transfer payment requests match the current filter.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-3">
+                    {list.map((req) => (
+                      <div
+                        key={req.id}
+                        className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${
+                          req.status === 'PENDING'
+                            ? 'bg-[#091529] border-cyan-500/45'
+                            : 'bg-[#081220] border-[#15273f]'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-3">
+                          <div className="space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono font-bold text-white text-sm">{req.orderRef}</span>
+                              <span className="text-xs font-bold uppercase text-cyan-300">
+                                {req.packageId}
+                              </span>
+                              <span
+                                className={`text-xs font-mono font-bold ${
+                                  req.status === 'APPROVED'
+                                    ? 'text-emerald-400'
+                                    : req.status === 'REJECTED'
+                                    ? 'text-rose-400'
+                                    : 'text-amber-400'
+                                }`}
+                              >
+                                {req.status}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-300">
+                              <span className="font-semibold text-white">{req.customerName}</span> ({req.customerEmail})
+                            </div>
+                          </div>
+
+                          <div className="text-left sm:text-right">
+                            <div className="text-lg font-bold font-mono tabular-nums text-amber-300">
+                              LKR {req.expectedAmountLkr.toLocaleString()}
+                            </div>
+                            <div className="text-[11px] text-slate-400 font-mono">
+                              Paid: {req.paymentDate} · Submitted: {new Date(req.submittedAt).toLocaleString()}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                          <div className="space-y-1">
+                            <div className="text-slate-300 font-mono">
+                              Transaction Ref: <strong className="text-white">{req.transactionReference}</strong>
+                            </div>
+                            {req.notes && <div className="text-slate-400">Note: {req.notes}</div>}
+                            {req.rejectionReason && (
+                              <div className="text-rose-400">Rejection Reason: {req.rejectionReason}</div>
+                            )}
+                            {req.activatedUntil && (
+                              <div className="text-emerald-400 font-mono">
+                                Activated until: {new Date(req.activatedUntil).toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleViewSubscriptionReceipt(req)}
+                              className="px-3 py-2 rounded-xl border border-white/15 bg-black/30 hover:border-cyan-400/50 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>View Receipt</span>
+                            </button>
+
+                            {req.status === 'PENDING' && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={reviewingSubId === req.id}
+                                  onClick={() => handleReviewSubscriptionRequest(req, 'APPROVE')}
+                                  className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>
+                                    {reviewingSubId === req.id ? 'Activating...' : 'Approve (30 Days)'}
+                                  </span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  disabled={reviewingSubId === req.id}
+                                  onClick={() => {
+                                    setRejectingReqId(rejectingReqId === req.id ? null : req.id);
+                                    setRejectReasonInput('');
+                                  }}
+                                  className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-bold text-xs cursor-pointer disabled:opacity-50"
+                                >
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {rejectingReqId === req.id && req.status === 'PENDING' && (
+                          <div className="pt-2 border-t border-white/10 flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="text"
+                              value={rejectReasonInput}
+                              onChange={(e) => setRejectReasonInput(e.target.value)}
+                              placeholder="Enter rejection reason (e.g. Unclear receipt or mismatch amount)"
+                              className="flex-1 rounded-xl border border-rose-500/40 bg-black/40 px-3 py-2 text-xs text-white focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={reviewingSubId === req.id}
+                              onClick={() => handleReviewSubscriptionRequest(req, 'REJECT', rejectReasonInput)}
+                              className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-xs whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              Confirm Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Sub-section 2: Active & Expired Subscriptions Directory */}
+          {subSection === 'directory' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5">
+                  {(['ALL', 'ACTIVE', 'EXPIRED'] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setSubDirFilter(f)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold cursor-pointer ${
+                        subDirFilter === f
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'bg-[#09121e] text-slate-400 border border-[#17273d]'
+                      }`}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#09121e] border border-[#162740] rounded-xl px-3 py-2 text-xs text-white sm:w-72">
+                  <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <input
+                    type="text"
+                    value={subSearch}
+                    onChange={(e) => setSubSearch(e.target.value)}
+                    placeholder="Filter by email or reference..."
+                    className="bg-transparent flex-1 focus:outline-none text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-[#081220] border border-[#15273f] overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#0e1c2d] text-slate-400 font-mono border-b border-[#162740]">
+                      <tr>
+                        <th className="p-3.5">User</th>
+                        <th className="p-3.5">Plan</th>
+                        <th className="p-3.5">Status</th>
+                        <th className="p-3.5">Activated</th>
+                        <th className="p-3.5">Expires</th>
+                        <th className="p-3.5">Days Left</th>
+                        <th className="p-3.5">Reference</th>
+                        <th className="p-3.5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#122238] text-slate-200">
+                      {(() => {
+                        const q = subSearch.trim().toLowerCase();
+                        const rows = (subOverview?.subscriptions || []).filter((s) => {
+                          if (subDirFilter !== 'ALL' && s.status !== subDirFilter) return false;
+                          if (!q) return true;
+                          return (
+                            s.email.toLowerCase().includes(q) ||
+                            s.username.toLowerCase().includes(q) ||
+                            (s.paymentReference || '').toLowerCase().includes(q)
+                          );
+                        });
+                        if (rows.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="p-8 text-center text-slate-400">
+                                No subscription records found.
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return rows.map((s) => (
+                          <tr key={s.userId} className="hover:bg-white/[0.02]">
+                            <td className="p-3.5">
+                              <div className="font-bold text-white">{s.username}</div>
+                              <div className="text-[11px] text-slate-400 font-mono">{s.email}</div>
+                            </td>
+                            <td className="p-3.5 font-mono font-bold uppercase text-cyan-300">
+                              {s.plan}
+                            </td>
+                            <td className="p-3.5 font-mono font-bold">
+                              <span
+                                className={
+                                  s.status === 'ACTIVE'
+                                    ? 'text-emerald-400'
+                                    : s.status === 'EXPIRED'
+                                    ? 'text-rose-400'
+                                    : 'text-slate-400'
+                                }
+                              >
+                                {s.status}
+                              </span>
+                            </td>
+                            <td className="p-3.5 font-mono tabular-nums text-slate-400 whitespace-nowrap">
+                              {s.activatedAt ? new Date(s.activatedAt).toLocaleDateString() : '—'}
+                            </td>
+                            <td className="p-3.5 font-mono tabular-nums text-slate-400 whitespace-nowrap">
+                              {s.expiresAt ? new Date(s.expiresAt).toLocaleDateString() : '—'}
+                            </td>
+                            <td className="p-3.5 font-mono tabular-nums font-bold text-white whitespace-nowrap">
+                              {s.plan === 'mini' ? 'Free' : `${s.daysRemaining}d`}
+                            </td>
+                            <td className="p-3.5 font-mono text-slate-300 whitespace-nowrap">
+                              {s.paymentReference || '—'}
+                            </td>
+                            <td className="p-3.5 text-right whitespace-nowrap">
+                              {s.plan !== 'mini' && (
+                                <button
+                                  type="button"
+                                  disabled={downgradingId === s.email}
+                                  onClick={() => handleDowngradeSubscription(s.email)}
+                                  className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                                >
+                                  {downgradingId === s.email ? 'Updating...' : 'Downgrade to MINI'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sub-section 3: Editable Bank Details & Monthly LKR Pricing */}
+          {subSection === 'config' && (
+            <form
+              onSubmit={handleSaveSubscriptionConfig}
+              className="rounded-2xl bg-[#081220] border border-[#15273f] p-5 sm:p-6 space-y-5"
+            >
+              <div className="flex items-center gap-2.5 border-b border-white/10 pb-3">
+                <Landmark className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Bank Transfer Account &amp; Monthly Package Pricing
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Displayed directly on the customer Subscription Purchase page
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Bank Name</label>
+                  <input
+                    type="text"
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs text-white"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Account Holder Name</label>
+                  <input
+                    type="text"
+                    value={accountName}
+                    onChange={(e) => setAccountName(e.target.value)}
+                    className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs text-white"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Account Number</label>
+                  <input
+                    type="text"
+                    value={accountNumber}
+                    onChange={(e) => setAccountNumber(e.target.value)}
+                    className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs font-mono text-white"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Branch Name</label>
+                  <input
+                    type="text"
+                    value={branchName}
+                    onChange={(e) => setBranchName(e.target.value)}
+                    className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs text-white"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">SWIFT / Bank Code (Optional)</label>
+                  <input
+                    type="text"
+                    value={swiftOrCode}
+                    onChange={(e) => setSwiftOrCode(e.target.value)}
+                    className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs font-mono text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-cyan-300">PRO Price (LKR / mo)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={proPriceLkr}
+                      onChange={(e) => setProPriceLkr(Number(e.target.value))}
+                      className="w-full rounded-xl border border-cyan-500/40 bg-[#0a1422] px-3 py-2 text-xs font-mono text-white"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-amber-300">BUSINESS Price (LKR / mo)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={businessPriceLkr}
+                      onChange={(e) => setBusinessPriceLkr(Number(e.target.value))}
+                      className="w-full rounded-xl border border-amber-500/40 bg-[#0a1422] px-3 py-2 text-xs font-mono text-white"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">Transfer Instructions</label>
+                <textarea
+                  rows={3}
+                  value={bankInstructions}
+                  onChange={(e) => setBankInstructions(e.target.value)}
+                  className="w-full rounded-xl border border-[#17273d] bg-[#0a1422] px-3 py-2 text-xs text-white"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingSubConfig}
+                className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider cursor-pointer disabled:opacity-60"
+              >
+                {savingSubConfig ? 'Saving...' : 'Save Bank Details & LKR Pricing'}
+              </button>
+            </form>
+          )}
         </div>
       )}
 
@@ -881,7 +1595,10 @@ export const AdminPanelView: React.FC = () => {
                         onClick={async () => {
                           soundFX.playClick();
                           try {
-                            const res = await fetch(`/api/bot/logout?sessionId=${bot.sessionId}`, { method: 'POST' });
+                            const res = await fetch(`/api/bot/logout?sessionId=${bot.sessionId}`, {
+                              method: 'POST',
+                              headers: withAuthHeaders(),
+                            });
                             const d = await res.json();
                             if (d.success) {
                               addToast(`Unlinked bot session: ${bot.sessionId}`, 'success');
@@ -1486,6 +2203,69 @@ export const AdminPanelView: React.FC = () => {
           </div>
         )}
       </AnimatePresence>
+
+      {/* AUTHENTICATED RECEIPT PREVIEW MODAL */}
+      {viewingSubReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-cyan-500/35 bg-[#081220] p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <h4 className="text-sm font-bold text-white">
+                  Receipt · {viewingSubReq.orderRef} ({viewingSubReq.packageId.toUpperCase()})
+                </h4>
+                <p className="text-xs text-slate-400 font-mono">
+                  {viewingSubReq.customerEmail} · Ref: {viewingSubReq.transactionReference} · LKR{' '}
+                  {viewingSubReq.expectedAmountLkr.toLocaleString()}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeReceiptModal}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/50 p-3 min-h-[240px] flex items-center justify-center">
+              {receiptLoading && <div className="text-xs text-slate-400">Loading receipt image...</div>}
+              {!receiptLoading && receiptLoadError && (
+                <div className="text-xs text-rose-400">{receiptLoadError}</div>
+              )}
+              {!receiptLoading && receiptBlobUrl && (
+                <img
+                  src={receiptBlobUrl}
+                  alt={`Receipt ${viewingSubReq.transactionReference}`}
+                  className="max-h-[60vh] w-auto rounded-lg object-contain"
+                />
+              )}
+            </div>
+
+            {viewingSubReq.status === 'PENDING' && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={reviewingSubId === viewingSubReq.id}
+                  onClick={async () => {
+                    await handleReviewSubscriptionRequest(viewingSubReq, 'APPROVE');
+                    closeReceiptModal();
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer"
+                >
+                  Approve &amp; Activate 30 Days
+                </button>
+                <button
+                  type="button"
+                  onClick={closeReceiptModal}
+                  className="py-2.5 px-4 rounded-xl bg-[#0e1c2d] text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

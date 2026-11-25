@@ -14,7 +14,12 @@
  */
 
 import crypto from 'crypto';
-import { proto, generateWAMessageFromContent, AIRich } from '@kaels/casileys';
+import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
+import * as Casileys from '@kaels/casileys';
+import { proto, generateWAMessageFromContent } from '@kaels/casileys';
+const AIRich = (Casileys as any).AIRich;
 import { EMBEDDED_BRAND_LOGO_BASE64, EMBEDDED_HEADER_BG_BASE64 } from './embeddedLogo';
 
 export interface CommandCardItem {
@@ -65,7 +70,7 @@ export function buildHtmlAppPayload(
     botResponseId?: string;
     messageSecret?: Buffer;
   } = {}
-): proto.IMessage {
+): any {
   const height = options.height || 980;
   const title = options.title || 'YASHI HALLS MINI';
 
@@ -124,7 +129,7 @@ html,body{margin:0;padding:0;height:${height}px;max-height:${height}px;overflow-
         ],
       };
 
-  const payload: proto.IMessage = {
+  const payload: any = {
     messageContextInfo: {
       deviceListMetadata: {},
       deviceListMetadataVersion: 2,
@@ -6275,5 +6280,2853 @@ export function generateFilmDownloadCardHtml(options: FilmDownloadCardOptions): 
 </div>
 `;
 }
+
+// ---------------------------------------------------------------------------
+// YASHI HALLS — BANK DETAILS & ANIMATED PAYMENT PROCESSING HTML APP UI CARDS
+// ---------------------------------------------------------------------------
+
+const BANK_BANNER_IMAGE_PATH = path.resolve(
+  process.cwd(),
+  'public/assets/aistudio/IMG-20260419-WA0086_30__88a851d2.jpg'
+);
+
+let cachedBankBannerDataUri: string | null = null;
+
+/**
+ * Loads, resizes, and caches the owner's Bank & eZ Cash banner image as a compact
+ * JPEG data URI so it renders instantaneously inside WhatsApp Android HTML App WebViews.
+ */
+export async function getEmbeddedBankBannerDataUri(): Promise<string> {
+  if (cachedBankBannerDataUri) return cachedBankBannerDataUri;
+  try {
+    if (!fs.existsSync(BANK_BANNER_IMAGE_PATH)) {
+      return '';
+    }
+    const compressed = await sharp(BANK_BANNER_IMAGE_PATH)
+      .resize({ width: 640, withoutEnlargement: true })
+      .jpeg({ quality: 74, mozjpeg: true })
+      .toBuffer();
+    cachedBankBannerDataUri = `data:image/jpeg;base64,${compressed.toString('base64')}`;
+    return cachedBankBannerDataUri;
+  } catch (err) {
+    console.warn('[HTML APP] Failed to prepare bank banner image:', err);
+    return '';
+  }
+}
+
+export interface PaymentBankDetailsCardOptions {
+  brandName?: string;
+  orderId?: string;
+  serviceLabel?: string;
+  packageLabel?: string;
+  amountLkr?: number;
+  bankName?: string;
+  accountName?: string;
+  accountNumber?: string;
+  ezCashNumber?: string;
+  branchName?: string;
+  instructions?: string;
+  bannerDataUri?: string;
+  height?: number;
+}
+
+/**
+ * Generates an interactive In-Chat WhatsApp HTML App UI Card displaying:
+ * - Order Summary (ID, Package, Total LKR)
+ * - Embedded Bank & eZ Cash Banner Photo
+ * - 1-Tap Copy Buttons for NSB Account, eZ Cash Number, and Order Remark
+ */
+export function generatePaymentBankDetailsHtml(opts: PaymentBankDetailsCardOptions = {}): string {
+  const brand = escapeHtml((opts.brandName || 'YASHI HALLS').toUpperCase());
+  const orderId = opts.orderId ? escapeHtml(opts.orderId) : '';
+  const serviceLabel = escapeHtml(opts.serviceLabel || 'GUILD SERVICE');
+  const packageLabel = escapeHtml(opts.packageLabel || '');
+  const amountText =
+    typeof opts.amountLkr === 'number' && opts.amountLkr > 0
+      ? `LKR ${opts.amountLkr.toLocaleString('en-US')}`
+      : '';
+
+  const accountName = escapeHtml(opts.accountName || 'A.M.Y.N Alahakoon');
+  const accountNumberRaw = (opts.accountNumber || '100156103618').replace(/[^0-9A-Za-z-]/g, '') || '100156103618';
+  const accountNumberDisplay = escapeHtml(opts.accountNumber || '100156103618');
+  const ezCashRaw = (opts.ezCashNumber || '0743865934').replace(/\D/g, '') || '0743865934';
+  const ezCashDisplay =
+    ezCashRaw.length === 10
+      ? `${ezCashRaw.slice(0, 3)} ${ezCashRaw.slice(3, 6)} ${ezCashRaw.slice(6)}`
+      : escapeHtml(ezCashRaw);
+  const bankLabel = escapeHtml(opts.bankName || 'NSB (National Savings Bank)');
+  const instructions = escapeHtml(
+    opts.instructions ||
+      'NSB හෝ eZ Cash වෙත නිවැරදි මුදල ගෙවා Payment Receipt (Photo / PDF) එක මෙතනට එවන්න.'
+  );
+  const bannerSrc = opts.bannerDataUri || '';
+  const height = opts.height || (orderId ? 615 : 535);
+
+  return `
+<style>
+  @keyframes goldPulse {
+    0%, 100% { box-shadow: 0 0 18px rgba(245, 158, 11, 0.28), inset 0 0 14px rgba(168, 85, 247, 0.14); border-color: rgba(245, 158, 11, 0.55); }
+    50% { box-shadow: 0 0 28px rgba(168, 85, 247, 0.42), inset 0 0 18px rgba(245, 158, 11, 0.18); border-color: rgba(192, 132, 252, 0.65); }
+  }
+  @keyframes shimmerBar {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+  @keyframes dotBlink {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(1.3); }
+  }
+  @keyframes toastPopPay {
+    0% { opacity: 0; transform: translate(-50%, -8px) scale(0.92); }
+    15% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    85% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -6px) scale(0.95); }
+  }
+  .pay-card {
+    box-sizing: border-box;
+    width: 100%;
+    height: ${height}px;
+    max-height: ${height}px;
+    background:
+      radial-gradient(circle at 12% 0%, rgba(168, 85, 247, 0.24), transparent 48%),
+      radial-gradient(circle at 88% 12%, rgba(245, 158, 11, 0.20), transparent 46%),
+      linear-gradient(180deg, #0b0716 0%, #090910 60%, #0d0818 100%);
+    color: #f8fafc;
+    border: 1.5px solid rgba(245, 158, 11, 0.55);
+    border-radius: 18px;
+    padding: 13px 12px 14px 12px;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+    animation: goldPulse 4.5s ease-in-out infinite;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .pay-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 9px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .pay-brand-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pay-brand {
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.9px;
+    background: linear-gradient(90deg, #fde68a, #f59e0b, #e879f9);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmerBar 3.6s linear infinite;
+  }
+  .pay-sub {
+    font-size: 9.5px;
+    color: #cbd5e1;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+  }
+  .pay-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(245, 158, 11, 0.14);
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    color: #fde68a;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .pay-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fbbf24;
+    animation: dotBlink 1.3s ease-in-out infinite;
+  }
+  .order-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+    margin-bottom: 10px;
+  }
+  .order-box {
+    background: rgba(20, 14, 38, 0.86);
+    border: 1px solid rgba(192, 132, 252, 0.3);
+    border-radius: 11px;
+    padding: 8px 10px;
+  }
+  .order-box.price {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(168, 85, 247, 0.16));
+    border-color: rgba(251, 191, 36, 0.55);
+  }
+  .ob-label {
+    font-size: 8.5px;
+    font-weight: 800;
+    color: #a78bfa;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .order-box.price .ob-label {
+    color: #fcd34d;
+  }
+  .ob-val {
+    font-size: 13px;
+    font-weight: 900;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .order-box.price .ob-val {
+    font-size: 15px;
+    color: #fde68a;
+  }
+  .ob-mini {
+    font-size: 9px;
+    color: #cbd5e1;
+    margin-top: 2px;
+    font-weight: 600;
+  }
+  .banner-frame {
+    position: relative;
+    width: 100%;
+    border-radius: 13px;
+    overflow: hidden;
+    border: 1.5px solid rgba(251, 191, 36, 0.5);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.65);
+    margin-bottom: 10px;
+    background: #070a1b;
+  }
+  .banner-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 175px;
+    object-fit: cover;
+  }
+  .bank-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 10px;
+  }
+  .bank-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: rgba(17, 17, 27, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 8px 10px;
+    transition: border-color 0.15s ease, transform 0.12s ease;
+  }
+  .bank-row.nsb {
+    border-left: 3px solid #f59e0b;
+  }
+  .bank-row.ez {
+    border-left: 3px solid #facc15;
+  }
+  .bank-row.ref {
+    border-left: 3px solid #a855f7;
+  }
+  .bank-info {
+    min-width: 0;
+    flex: 1;
+  }
+  .bank-tag {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #fbbf24;
+    text-transform: uppercase;
+  }
+  .bank-row.ref .bank-tag {
+    color: #c084fc;
+  }
+  .bank-num {
+    font-size: 14px;
+    font-weight: 900;
+    color: #ffffff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    letter-spacing: 0.6px;
+    margin-top: 1px;
+  }
+  .bank-holder {
+    font-size: 10px;
+    color: #94a3b8;
+    font-weight: 600;
+    margin-top: 1px;
+  }
+  .copy-btn {
+    flex-shrink: 0;
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: #09090b;
+    border: none;
+    border-radius: 9px;
+    padding: 7px 11px;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    box-shadow: 0 3px 10px rgba(245, 158, 11, 0.35);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .bank-row.ref .copy-btn {
+    background: linear-gradient(135deg, #a855f7, #7e22ce);
+    color: #ffffff;
+    box-shadow: 0 3px 10px rgba(168, 85, 247, 0.38);
+  }
+  .copy-btn:active {
+    transform: scale(0.95);
+  }
+  .upload-note {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px dashed rgba(52, 211, 153, 0.5);
+    border-radius: 11px;
+    padding: 8px 10px;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: #d1fae5;
+    font-weight: 600;
+  }
+  .pay-footer {
+    text-align: center;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1.6px;
+    color: rgba(251, 191, 36, 0.72);
+    margin-top: 9px;
+  }
+  #payToast {
+    display: none;
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #141024;
+    border: 1.5px solid #fbbf24;
+    color: #fef3c7;
+    padding: 7px 15px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    white-space: nowrap;
+  }
+</style>
+
+<div class="pay-card">
+  <div id="payToast">✓ Copied!</div>
+  <textarea id="payClipSink" style="position:fixed;top:-9999px;left:-9999px;opacity:0;"></textarea>
+
+  <div class="pay-top">
+    <div class="pay-brand-wrap">
+      <div class="pay-brand">🏦 ${brand} • PAYMENT</div>
+      <div class="pay-sub">OFFICIAL BANK &amp; EZ CASH DETAILS</div>
+    </div>
+    <div class="pay-live">
+      <span class="pay-dot"></span>
+      <span>${orderId ? orderId : 'VERIFIED'}</span>
+    </div>
+  </div>
+
+  ${
+    orderId
+      ? `<div class="order-strip">
+    <div class="order-box">
+      <div class="ob-label">📦 SELECTED PACKAGE</div>
+      <div class="ob-val">${packageLabel || serviceLabel}</div>
+      <div class="ob-mini">${serviceLabel}</div>
+    </div>
+    <div class="order-box price">
+      <div class="ob-label">💰 TOTAL TO PAY</div>
+      <div class="ob-val">${amountText || 'See Order'}</div>
+      <div class="ob-mini">Exact amount required</div>
+    </div>
+  </div>`
+      : ''
+  }
+
+  ${
+    bannerSrc
+      ? `<div class="banner-frame">
+    <img class="banner-img" src="${bannerSrc}" alt="NSB &amp; eZ Cash Bank Details" />
+  </div>`
+      : ''
+  }
+
+  <div class="bank-list">
+    <div class="bank-row nsb">
+      <div class="bank-info">
+        <div class="bank-tag">🏛️ ${bankLabel}</div>
+        <div class="bank-num">${accountNumberDisplay}</div>
+        <div class="bank-holder">👤 ${accountName}</div>
+      </div>
+      <button class="copy-btn" onclick="copyPayVal('${escapeHtml(accountNumberRaw)}', 'NSB Account')">📋 COPY</button>
+    </div>
+
+    <div class="bank-row ez">
+      <div class="bank-info">
+        <div class="bank-tag">📱 DIALOG EZ CASH</div>
+        <div class="bank-num">${ezCashDisplay}</div>
+        <div class="bank-holder">⚡ Instant Mobile Transfer</div>
+      </div>
+      <button class="copy-btn" onclick="copyPayVal('${escapeHtml(ezCashRaw)}', 'eZ Cash Number')">📋 COPY</button>
+    </div>
+
+    ${
+      orderId
+        ? `<div class="bank-row ref">
+      <div class="bank-info">
+        <div class="bank-tag">🔖 BANK REMARK / ORDER ID</div>
+        <div class="bank-num">${orderId}</div>
+        <div class="bank-holder">Include in transfer reference</div>
+      </div>
+      <button class="copy-btn" onclick="copyPayVal('${orderId}', 'Order ID')">📋 COPY</button>
+    </div>`
+        : ''
+    }
+  </div>
+
+  <div class="upload-note">
+    📤 <strong>NEXT STEP:</strong> ${instructions}
+  </div>
+
+  <div class="pay-footer">⚡ ${brand} AUTOMATED PAYMENT GATEWAY ⚡</div>
+</div>
+
+<script>
+  var pTimer = null;
+  function showPayToast(msg) {
+    var t = document.getElementById('payToast');
+    if (!t) return;
+    t.innerText = msg;
+    t.style.display = 'block';
+    t.style.animation = 'none';
+    void t.offsetHeight;
+    t.style.animation = 'toastPopPay 1.7s ease forwards';
+    if (pTimer) clearTimeout(pTimer);
+    pTimer = setTimeout(function() { t.style.display = 'none'; }, 1700);
+  }
+  function copyPayVal(val, label) {
+    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(val).then(function() {
+        showPayToast('✓ ' + label + ' Copied: ' + val);
+      }).catch(function() {
+        fallbackPayCopy(val, label);
+      });
+    } else {
+      fallbackPayCopy(val, label);
+    }
+  }
+  function fallbackPayCopy(val, label) {
+    try {
+      var s = document.getElementById('payClipSink');
+      if (s) {
+        s.value = val;
+        s.select();
+        s.setSelectionRange(0, 99999);
+        document.execCommand('copy');
+      }
+      showPayToast('✓ ' + label + ' Copied: ' + val);
+    } catch (e) {
+      showPayToast(label + ': ' + val);
+    }
+  }
+</script>
+`;
+}
+
+export type PaymentProcessingStage =
+  | 'SCANNING'
+  | 'VERIFYING_BANK'
+  | 'AWAITING_APPROVAL'
+  | 'VERIFIED'
+  | 'REJECTED'
+  | 'LAUNCHING'
+  | 'LAUNCHED';
+
+export interface PaymentProcessingCardOptions {
+  brandName?: string;
+  orderId: string;
+  stage: PaymentProcessingStage;
+  packageLabel?: string;
+  expectedAmountLkr?: number;
+  detectedAmountLkr?: number | null;
+  bankName?: string | null;
+  reference?: string | null;
+  headline?: string;
+  subline?: string;
+  guildId?: string;
+  region?: string;
+  height?: number;
+}
+
+/**
+ * Generates a live animated Cyber/Neon In-Chat HTML App Card for Payment Receipt Processing,
+ * Admin/Bank Verification, and Glory Bot Auto Launch. Supports seamless in-place editHtmlApp updates.
+ */
+export function generatePaymentProcessingHtml(opts: PaymentProcessingCardOptions): string {
+  const brand = escapeHtml((opts.brandName || 'YASHI HALLS').toUpperCase());
+  const orderId = escapeHtml(opts.orderId || 'YH-ORDER');
+  const stage = opts.stage;
+  const height = opts.height || 315;
+
+  const isSuccess = stage === 'VERIFIED' || stage === 'LAUNCHED';
+  const isError = stage === 'REJECTED';
+  const isWaiting = stage === 'AWAITING_APPROVAL';
+  const isActiveSpin = stage === 'SCANNING' || stage === 'VERIFYING_BANK' || stage === 'LAUNCHING';
+
+  const accentPrimary = isSuccess
+    ? '#10b981'
+    : isError
+      ? '#ef4444'
+      : isWaiting
+        ? '#f59e0b'
+        : '#a855f7';
+  const accentSecondary = isSuccess
+    ? '#34d399'
+    : isError
+      ? '#f87171'
+      : isWaiting
+        ? '#fbbf24'
+        : '#38bdf8';
+
+  const progressPct =
+    stage === 'SCANNING'
+      ? 36
+      : stage === 'VERIFYING_BANK'
+        ? 64
+        : stage === 'AWAITING_APPROVAL'
+          ? 74
+          : stage === 'VERIFIED'
+            ? 88
+            : stage === 'LAUNCHING'
+              ? 92
+              : stage === 'LAUNCHED'
+                ? 100
+                : 100;
+
+  const pillLabel =
+    stage === 'SCANNING'
+      ? 'SCANNING RECEIPT'
+      : stage === 'VERIFYING_BANK'
+        ? 'VERIFYING PAYMENT'
+        : stage === 'AWAITING_APPROVAL'
+          ? 'AWAITING APPROVAL'
+          : stage === 'VERIFIED'
+            ? 'PAYMENT VERIFIED'
+            : stage === 'LAUNCHING'
+              ? 'LAUNCHING BOTS'
+              : stage === 'LAUNCHED'
+                ? 'DELIVERY COMPLETE'
+                : 'VERIFICATION FAILED';
+
+  const centerIcon =
+    stage === 'SCANNING'
+      ? '🔍'
+      : stage === 'VERIFYING_BANK'
+        ? '🏦'
+        : stage === 'AWAITING_APPROVAL'
+          ? '⏳'
+          : stage === 'VERIFIED'
+            ? '✅'
+            : stage === 'LAUNCHING'
+              ? '🚀'
+              : stage === 'LAUNCHED'
+                ? '🔥'
+                : '❌';
+
+  const defaultHeadline =
+    stage === 'SCANNING'
+      ? 'Scanning Your Payment Receipt...'
+      : stage === 'VERIFYING_BANK'
+        ? 'Cross-Checking Bank Confirmation...'
+        : stage === 'AWAITING_APPROVAL'
+          ? 'Receipt Received — Verifying Payment'
+          : stage === 'VERIFIED'
+            ? 'Payment Verified Successfully!'
+            : stage === 'LAUNCHING'
+              ? 'Deploying Free Fire Glory Bots...'
+              : stage === 'LAUNCHED'
+                ? 'Glory Bots Successfully Deployed!'
+                : 'Payment Could Not Be Verified';
+
+  const defaultSubline =
+    stage === 'SCANNING'
+      ? 'AI OCR & Bank Verification Engine මඟින් ඔබගේ Receipt එක පරීක්ෂා කරමින් පවතී...'
+      : stage === 'VERIFYING_BANK'
+        ? 'Bank Notification පද්ධතිය සමඟ ගෙවීම තහවුරු කරමින් පවතී...'
+        : stage === 'AWAITING_APPROVAL'
+          ? 'Bank Notification හෝ Admin තහවුරු කිරීම ලැබුණු වහාම ඔබේ ඕඩර් එක ස්වයංක්‍රීයව ඉදිරියට යයි.'
+          : stage === 'VERIFIED'
+            ? 'ඔබගේ ගෙවීම තහවුරු විය! දැන් පහත කාඩ්පතින් Guild විස්තර ලබාදෙන්න.'
+            : stage === 'LAUNCHING'
+              ? 'FFGlory API වෙත සම්බන්ධ වී ඔබේ Guild එකට Bots සක්‍රීය කරමින් පවතී...'
+              : stage === 'LAUNCHED'
+                ? 'ඔබගේ Glory Bots සාර්ථකව සක්‍රීය කරන ලදී! Live Glory Tracker පරීක්ෂා කරන්න.'
+                : 'ගෙවීම තහවුරු කිරීමට නොහැකි විය. නිවැරදි Payment Receipt එකක් නැවත එවන්න.';
+
+  const headline = escapeHtml(opts.headline || defaultHeadline);
+  const subline = escapeHtml(opts.subline || defaultSubline);
+  const expectedText =
+    typeof opts.expectedAmountLkr === 'number' && opts.expectedAmountLkr > 0
+      ? `LKR ${opts.expectedAmountLkr.toLocaleString('en-US')}`
+      : '—';
+  const detectedText =
+    typeof opts.detectedAmountLkr === 'number' && opts.detectedAmountLkr > 0
+      ? `LKR ${opts.detectedAmountLkr.toLocaleString('en-US')}`
+      : stage === 'SCANNING'
+        ? 'Reading...'
+        : 'Pending';
+
+  const step1State = stage === 'SCANNING' ? 'active' : 'done';
+  const step2State =
+    stage === 'VERIFYING_BANK' || stage === 'AWAITING_APPROVAL'
+      ? 'active'
+      : stage === 'VERIFIED' || stage === 'LAUNCHING' || stage === 'LAUNCHED'
+        ? 'done'
+        : stage === 'REJECTED'
+          ? 'error'
+          : 'idle';
+  const step3State =
+    stage === 'LAUNCHING'
+      ? 'active'
+      : stage === 'LAUNCHED'
+        ? 'done'
+        : stage === 'VERIFIED'
+          ? 'active'
+          : 'idle';
+
+  return `
+<style>
+  @keyframes orbSpin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  @keyframes orbSpinRev {
+    0% { transform: rotate(360deg); }
+    100% { transform: rotate(0deg); }
+  }
+  @keyframes corePulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 14px ${accentPrimary}66; }
+    50% { transform: scale(1.09); box-shadow: 0 0 26px ${accentSecondary}aa; }
+  }
+  @keyframes scanLaser {
+    0% { transform: translateY(-10px); opacity: 0; }
+    20% { opacity: 0.75; }
+    80% { opacity: 0.75; }
+    100% { transform: translateY(150px); opacity: 0; }
+  }
+  @keyframes barGlide {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+  @keyframes waveBounce {
+    0%, 100% { height: 5px; opacity: 0.45; }
+    50% { height: 16px; opacity: 1; }
+  }
+  .proc-card {
+    box-sizing: border-box;
+    width: 100%;
+    height: ${height}px;
+    max-height: ${height}px;
+    position: relative;
+    overflow: hidden;
+    border-radius: 18px;
+    padding: 13px 14px;
+    background:
+      radial-gradient(circle at 50% 18%, ${accentPrimary}2b, transparent 58%),
+      radial-gradient(circle at 90% 90%, ${accentSecondary}1c, transparent 50%),
+      linear-gradient(160deg, #0b0718 0%, #090c17 55%, #0e081a 100%);
+    border: 1.5px solid ${accentPrimary}88;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.72), inset 0 0 22px ${accentPrimary}18;
+    color: #f8fafc;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .laser-beam {
+    display: ${isActiveSpin || isWaiting ? 'block' : 'none'};
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, ${accentSecondary}, ${accentPrimary}, transparent);
+    box-shadow: 0 0 12px ${accentSecondary};
+    animation: scanLaser 2.4s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .proc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .proc-brand {
+    font-size: 10.5px;
+    font-weight: 900;
+    letter-spacing: 0.9px;
+    color: #e2e8f0;
+  }
+  .proc-pill {
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: ${accentPrimary}22;
+    border: 1px solid ${accentPrimary}aa;
+    color: ${accentSecondary};
+    white-space: nowrap;
+  }
+  .proc-hero {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    margin: 6px 0;
+  }
+  .orb-wrap {
+    position: relative;
+    width: 62px;
+    height: 62px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .orb-ring-outer {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2.5px solid transparent;
+    border-top-color: ${accentSecondary};
+    border-right-color: ${accentPrimary};
+    animation: ${isActiveSpin ? 'orbSpin 1.25s linear infinite' : isWaiting ? 'orbSpin 2.8s linear infinite' : 'none'};
+  }
+  .orb-ring-inner {
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    border: 2px dashed ${accentPrimary}88;
+    animation: ${isActiveSpin ? 'orbSpinRev 2.2s linear infinite' : isWaiting ? 'orbSpinRev 4.5s linear infinite' : 'none'};
+  }
+  .orb-core {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: radial-gradient(circle, ${accentPrimary}44, #0f172a);
+    border: 1.5px solid ${accentSecondary}88;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    animation: ${isSuccess || isError ? 'none' : 'corePulse 1.8s ease-in-out infinite'};
+  }
+  .hero-copy {
+    min-width: 0;
+    flex: 1;
+  }
+  .hero-title {
+    font-size: 14px;
+    font-weight: 900;
+    color: #ffffff;
+    line-height: 1.22;
+    margin-bottom: 4px;
+  }
+  .hero-sub {
+    font-size: 10.5px;
+    color: #cbd5e1;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .wave-row {
+    display: ${isActiveSpin || isWaiting ? 'flex' : 'none'};
+    align-items: center;
+    gap: 3px;
+    height: 16px;
+    margin-top: 5px;
+  }
+  .wave-bar {
+    width: 3px;
+    border-radius: 99px;
+    background: linear-gradient(180deg, ${accentSecondary}, ${accentPrimary});
+    animation: waveBounce 0.9s ease-in-out infinite;
+  }
+  .wave-bar:nth-child(2) { animation-delay: 0.12s; }
+  .wave-bar:nth-child(3) { animation-delay: 0.24s; }
+  .wave-bar:nth-child(4) { animation-delay: 0.36s; }
+  .wave-bar:nth-child(5) { animation-delay: 0.48s; }
+  .wave-bar:nth-child(6) { animation-delay: 0.60s; }
+  .wave-lbl {
+    font-size: 9px;
+    font-weight: 800;
+    color: ${accentSecondary};
+    margin-left: 5px;
+    letter-spacing: 0.5px;
+  }
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .meta-box {
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 10px;
+    padding: 6px 7px;
+  }
+  .meta-k {
+    font-size: 8px;
+    font-weight: 800;
+    color: #94a3b8;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .meta-v {
+    font-size: 11px;
+    font-weight: 900;
+    color: #f8fafc;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .steps-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+    margin-top: 6px;
+  }
+  .step-chip {
+    text-align: center;
+    padding: 4px 5px;
+    border-radius: 8px;
+    font-size: 8.5px;
+    font-weight: 800;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: #64748b;
+    background: rgba(15, 23, 42, 0.55);
+  }
+  .step-chip.done {
+    border-color: rgba(16, 185, 129, 0.55);
+    background: rgba(16, 185, 129, 0.15);
+    color: #6ee7b7;
+  }
+  .step-chip.active {
+    border-color: ${accentSecondary};
+    background: ${accentPrimary}26;
+    color: #ffffff;
+  }
+  .step-chip.error {
+    border-color: rgba(239, 68, 68, 0.65);
+    background: rgba(239, 68, 68, 0.16);
+    color: #fca5a5;
+  }
+  .bar-track {
+    width: 100%;
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .bar-fill {
+    height: 100%;
+    width: ${progressPct}%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, ${accentPrimary}, ${accentSecondary}, ${accentPrimary});
+    background-size: 200% 100%;
+    animation: ${isSuccess || isError ? 'none' : 'barGlide 1.5s linear infinite'};
+  }
+</style>
+
+<div class="proc-card">
+  <div class="laser-beam"></div>
+
+  <div class="proc-head">
+    <div class="proc-brand">⚡ ${brand} • ${orderId}</div>
+    <div class="proc-pill">${pillLabel}</div>
+  </div>
+
+  <div class="proc-hero">
+    <div class="orb-wrap">
+      <div class="orb-ring-outer"></div>
+      <div class="orb-ring-inner"></div>
+      <div class="orb-core">${centerIcon}</div>
+    </div>
+    <div class="hero-copy">
+      <div class="hero-title">${headline}</div>
+      <div class="hero-sub">${subline}</div>
+      <div class="wave-row">
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <span class="wave-lbl">LIVE ENGINE ACTIVE</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="meta-grid">
+      <div class="meta-box">
+        <div class="meta-k">${opts.guildId ? 'GUILD ID' : 'EXPECTED'}</div>
+        <div class="meta-v">${opts.guildId ? escapeHtml(opts.guildId) : expectedText}</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-k">${opts.region ? 'REGION' : 'DETECTED'}</div>
+        <div class="meta-v">${opts.region ? escapeHtml(opts.region.toUpperCase()) : detectedText}</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-k">${opts.bankName ? 'BANK / METHOD' : 'PACKAGE'}</div>
+        <div class="meta-v">${escapeHtml(opts.bankName || opts.packageLabel || 'GUILD BOTS')}</div>
+      </div>
+    </div>
+
+    <div class="steps-row">
+      <div class="step-chip ${step1State}">${step1State === 'done' ? '✓' : '●'} 1. SCAN</div>
+      <div class="step-chip ${step2State}">${step2State === 'done' ? '✓' : step2State === 'error' ? '✕' : '●'} 2. VERIFY</div>
+      <div class="step-chip ${step3State}">${step3State === 'done' ? '✓' : '●'} 3. DELIVER</div>
+    </div>
+
+    <div class="bar-track">
+      <div class="bar-fill"></div>
+    </div>
+  </div>
+</div>
+`;
+}
+
+// ---------------------------------------------------------------------------
+// YASHI HALLS — PHASE 5 INTERACTIVE "LAUNCH NEW GROUP" GUILD CONFIG HTML CARD
+// Matches FFGlory Dark Charcoal & Warm Champagne Gold UI with Searchable
+// Region Dropdown, Clan ID Input, Sinhala Guide, and 1-Tap Copy Button
+// ---------------------------------------------------------------------------
+
+export interface GuildLaunchRegionItem {
+  id: string;
+  name: string;
+  code?: string;
+}
+
+export interface GuildLaunchFormCardOptions {
+  brandName?: string;
+  orderId: string;
+  botQuantity?: number;
+  amountLkr?: number;
+  regions: GuildLaunchRegionItem[];
+  defaultRegionId?: string;
+  height?: number;
+}
+
+function resolveRegionFlag(idOrCode: string, name: string): string {
+  const key = `${idOrCode || ''} ${name || ''}`.toLowerCase();
+  if (/\bbd\b|bangladesh/.test(key)) return '🇧🇩';
+  if (/\bbr\b|brasil|brazil/.test(key)) return '🇧🇷';
+  if (/\beu\b|europe/.test(key)) return '🇪🇺';
+  if (/\bin\b|ind\b|india/.test(key)) return '🇮🇳';
+  if (/\bindo\b|\bid\b|indonesia/.test(key)) return '🇮🇩';
+  if (/\bna\b|north america/.test(key)) return '🇺🇸';
+  if (/\bus\b|united states/.test(key)) return '🇺🇸';
+  if (/\bpk\b|pakistan/.test(key)) return '🇵🇰';
+  if (/\bsg\b|singapore/.test(key)) return '🇸🇬';
+  if (/\bvn\b|vietnam/.test(key)) return '🇻🇳';
+  if (/\bth\b|thailand/.test(key)) return '🇹🇭';
+  if (/\bme\b|middle east/.test(key)) return '🇦🇪';
+  if (/\bru\b|russia/.test(key)) return '🇷🇺';
+  if (/\bsac\b|south america|latam/.test(key)) return '🌎';
+  if (/\bghrab\b|mena|arab/.test(key)) return '🌍';
+  if (/\btw\b|taiwan/.test(key)) return '🇹🇼';
+  return '🌐';
+}
+
+export function generateGuildLaunchFormHtml(opts: GuildLaunchFormCardOptions): string {
+  const brand = escapeHtml((opts.brandName || 'YASHI HALLS').toUpperCase());
+  const orderId = escapeHtml(opts.orderId || 'YH-ORDER');
+  const botQty = opts.botQuantity || 4;
+  const height = opts.height || 530;
+
+  const fallbackRegions: GuildLaunchRegionItem[] = [
+    { id: 'bd', name: 'Bangladesh' },
+    { id: 'br', name: 'Brasil' },
+    { id: 'eu', name: 'Europe' },
+    { id: 'in', name: 'India' },
+    { id: 'indo', name: 'Indonesia' },
+    { id: 'na', name: 'North America' },
+    { id: 'pk', name: 'Pakistan' },
+    { id: 'sg', name: 'Singapore' },
+    { id: 'us', name: 'United States (US)' },
+    { id: 'vn', name: 'Vietname' },
+    { id: 'th', name: 'Thailand' },
+    { id: 'me', name: 'Middle East' },
+    { id: 'ru', name: 'Russia' },
+    { id: 'sac', name: 'South America' },
+  ];
+
+  const cleanRegions = (opts.regions && opts.regions.length > 0 ? opts.regions : fallbackRegions)
+    .map((r) => ({
+      id: String(r.id || '').trim().toLowerCase(),
+      name: String(r.name || r.id || '').trim(),
+      flag: resolveRegionFlag(r.id || r.code || '', r.name || ''),
+    }))
+    .filter((r) => r.id.length > 0)
+    .sort((a, b) => {
+      const aIsSg = a.id === 'sg' || a.name.toLowerCase().includes('singapore');
+      const bIsSg = b.id === 'sg' || b.name.toLowerCase().includes('singapore');
+      if (aIsSg && !bIsSg) return -1;
+      if (!aIsSg && bIsSg) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  const preferredDefault =
+    cleanRegions.find((r) => r.id === (opts.defaultRegionId || '').toLowerCase()) ||
+    cleanRegions.find((r) => r.id === 'sg' || r.name.toLowerCase().includes('singapore')) ||
+    cleanRegions[0];
+
+  const regionsJson = JSON.stringify(cleanRegions).replace(/</g, '\\u003c');
+  const defaultIdJson = JSON.stringify(preferredDefault.id);
+  const orderIdJson = JSON.stringify(opts.orderId || 'YH-ORDER');
+
+  return `
+<style>
+  @keyframes toastSlide {
+    0% { opacity: 0; transform: translate(-50%, -10px) scale(0.94); }
+    14% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    86% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -8px) scale(0.95); }
+  }
+  @keyframes inputShake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-5px); }
+    40% { transform: translateX(5px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+  * { box-sizing: border-box; }
+  .lg-root {
+    width: 100%;
+    height: ${height}px;
+    max-height: ${height}px;
+    background: #0d0e10;
+    color: #f4f4f5;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 12px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+  }
+  .lg-card {
+    background: #141518;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
+    padding: 15px 14px 14px 14px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    position: relative;
+  }
+  .lg-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .lg-title-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .lg-bolt-box {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: #1c1d21;
+    border: 1px solid rgba(225, 204, 160, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .lg-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: #ffffff;
+    letter-spacing: -0.2px;
+  }
+  .lg-order-pill {
+    font-size: 9.5px;
+    font-weight: 800;
+    color: #e1cca0;
+    background: rgba(225, 204, 160, 0.1);
+    border: 1px solid rgba(225, 204, 160, 0.32);
+    padding: 4px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .lg-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.9px;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .region-wrap {
+    position: relative;
+    margin-bottom: 6px;
+  }
+  .region-trigger {
+    width: 100%;
+    height: 46px;
+    background: #101114;
+    border: 1.5px solid rgba(225, 204, 160, 0.35);
+    border-radius: 11px;
+    padding: 0 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .region-trigger.open {
+    border-color: #e1cca0;
+    box-shadow: 0 0 0 2px rgba(225, 204, 160, 0.16);
+  }
+  .region-selected-left {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+  .region-flag {
+    font-size: 17px;
+    line-height: 1;
+  }
+  .region-chevron {
+    color: #e1cca0;
+    font-size: 13px;
+    transition: transform 0.18s ease;
+  }
+  .region-trigger.open .region-chevron {
+    transform: rotate(180deg);
+  }
+  .region-dropdown {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 52px;
+    background: #131417;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 13px;
+    padding: 9px;
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.88);
+    z-index: 50;
+  }
+  .region-dropdown.show {
+    display: block;
+  }
+  .region-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #0d0e10;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    padding: 0 10px;
+    height: 38px;
+    margin-bottom: 8px;
+  }
+  .region-search-input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #f4f4f5;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .region-search-input::placeholder {
+    color: #71717a;
+  }
+  .region-list {
+    max-height: 215px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .region-list::-webkit-scrollbar { width: 4px; }
+  .region-list::-webkit-scrollbar-thumb { background: rgba(225, 204, 160, 0.35); border-radius: 4px; }
+  .region-opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 10px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #e4e4e7;
+    cursor: pointer;
+    border: 1px solid transparent;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .region-opt:active {
+    background: rgba(225, 204, 160, 0.14);
+  }
+  .region-opt.active {
+    background: rgba(225, 204, 160, 0.13);
+    border-color: rgba(225, 204, 160, 0.45);
+    color: #f3e2be;
+  }
+  .region-opt-left {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .region-check {
+    color: #e1cca0;
+    font-weight: 900;
+    font-size: 13px;
+  }
+  .lg-helper {
+    font-size: 11px;
+    color: #71717a;
+    margin-bottom: 11px;
+  }
+  .lg-notice {
+    background: rgba(217, 160, 54, 0.1);
+    border: 1px solid rgba(217, 160, 54, 0.38);
+    border-radius: 11px;
+    padding: 10px 11px;
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-bottom: 14px;
+  }
+  .lg-notice-icon {
+    font-size: 14px;
+    line-height: 1.3;
+    flex-shrink: 0;
+  }
+  .lg-notice-text {
+    font-size: 11.5px;
+    line-height: 1.48;
+    color: #f2d492;
+    font-weight: 600;
+  }
+  .clan-input {
+    width: 100%;
+    height: 46px;
+    background: #101114;
+    border: 1.5px solid rgba(255, 255, 255, 0.14);
+    border-radius: 11px;
+    padding: 0 13px;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    outline: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    margin-bottom: 13px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .clan-input::placeholder {
+    color: #52525b;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  .clan-input:focus {
+    border-color: #e1cca0;
+    box-shadow: 0 0 0 2px rgba(225, 204, 160, 0.16);
+  }
+  .clan-input.err {
+    border-color: #ef4444;
+    animation: inputShake 0.32s ease;
+  }
+  .lg-btn-copy {
+    width: 100%;
+    height: 48px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #e7d4ab 0%, #d5be8e 100%);
+    color: #141518;
+    font-size: 13.5px;
+    font-weight: 900;
+    letter-spacing: 0.2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(225, 204, 160, 0.25);
+    transition: transform 0.12s ease, background 0.2s ease, color 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .lg-btn-copy:active {
+    transform: scale(0.98);
+  }
+  .lg-btn-copy.copied {
+    background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+    color: #ffffff;
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
+  }
+  .copied-preview {
+    display: none;
+    margin-top: 10px;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px dashed rgba(52, 211, 153, 0.5);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #a7f3d0;
+    line-height: 1.45;
+  }
+  .copied-preview code {
+    display: block;
+    margin-top: 4px;
+    color: #ffffff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    white-space: pre-wrap;
+  }
+  .lg-foot {
+    text-align: center;
+    margin-top: 10px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    color: #52525b;
+  }
+  #lgToast {
+    display: none;
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #18181b;
+    border: 1.5px solid #e1cca0;
+    color: #fef3c7;
+    padding: 8px 15px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.8);
+    z-index: 9999;
+    white-space: nowrap;
+  }
+</style>
+
+<div class="lg-root">
+  <div id="lgToast">✓ Copied!</div>
+  <textarea id="lgClipSink" style="position:fixed;top:-9999px;left:-9999px;opacity:0;"></textarea>
+
+  <div class="lg-card">
+    <div class="lg-header">
+      <div class="lg-title-left">
+        <div class="lg-bolt-box">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#e1cca0" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div class="lg-title">Launch New Group</div>
+      </div>
+      <div class="lg-order-pill">${orderId} · ${botQty} BOTS</div>
+    </div>
+
+    <div class="lg-label">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="2" y1="12" x2="22" y2="12"></line>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+      </svg>
+      <span>ACCOUNTS REGION</span>
+    </div>
+
+    <div class="region-wrap">
+      <button type="button" class="region-trigger" id="regionTrigger" onclick="toggleRegionDropdown()">
+        <span class="region-selected-left">
+          <span class="region-flag" id="selectedFlag">${preferredDefault.flag}</span>
+          <span id="selectedName">${escapeHtml(preferredDefault.name)}</span>
+        </span>
+        <span class="region-chevron">⌄</span>
+      </button>
+
+      <div class="region-dropdown" id="regionDropdown">
+        <div class="region-search-box">
+          <span style="color:#71717a;font-size:13px;">🔍</span>
+          <input type="text" id="regionSearch" class="region-search-input" placeholder="Find a region..." oninput="filterRegions()" />
+        </div>
+        <div class="region-list" id="regionList"></div>
+      </div>
+    </div>
+
+    <div class="lg-helper">Choose the region your clan belongs to.</div>
+
+    <div class="lg-notice">
+      <div class="lg-notice-icon">🔔</div>
+      <div class="lg-notice-text">
+        ඔයාගේ Clan එකේ Details (Region සහ Clan ID) ඇතුලත් කර, පහත ඇති Button එකෙන් <strong>Copy</strong> කර නැවත මෙම Chat එකට <strong>Paste කර එවන්න</strong>.
+      </div>
+    </div>
+
+    <div class="lg-label">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+      </svg>
+      <span>CLAN ID</span>
+    </div>
+
+    <input
+      type="tel"
+      inputmode="numeric"
+      id="clanIdInput"
+      class="clan-input"
+      placeholder="e.g. 123456789"
+      maxlength="18"
+      oninput="this.value=this.value.replace(/[^0-9]/g,''); this.classList.remove('err');"
+    />
+
+    <button type="button" class="lg-btn-copy" id="copyDetailsBtn" onclick="copyGuildDetails()">
+      <span>⚡ Copy Guild Details (${botQty} BOTS)</span>
+    </button>
+
+    <div class="copied-preview" id="copiedPreview">
+      ✅ <strong>Copied!</strong> දැන් මෙම Chat එකේ Paste කර Send කරන්න 👇
+      <code id="copiedPreviewCode"></code>
+    </div>
+  </div>
+
+  <div class="lg-foot">⚡ ${brand} · INTERACTIVE GUILD LAUNCHER ⚡</div>
+</div>
+
+<script>
+  var LG_REGIONS = ${regionsJson};
+  var selectedRegionId = ${defaultIdJson};
+  var ORDER_ID = ${orderIdJson};
+  var lgToastTimer = null;
+
+  function showLgToast(msg, borderColor) {
+    var t = document.getElementById('lgToast');
+    if (!t) return;
+    t.innerText = msg;
+    t.style.borderColor = borderColor || '#e1cca0';
+    t.style.display = 'block';
+    t.style.animation = 'none';
+    void t.offsetHeight;
+    t.style.animation = 'toastSlide 2.2s ease forwards';
+    if (lgToastTimer) clearTimeout(lgToastTimer);
+    lgToastTimer = setTimeout(function() { t.style.display = 'none'; }, 2200);
+  }
+
+  function renderRegionList(filterText) {
+    var listEl = document.getElementById('regionList');
+    if (!listEl) return;
+    var q = (filterText || '').trim().toLowerCase();
+    var html = '';
+    for (var i = 0; i < LG_REGIONS.length; i++) {
+      var r = LG_REGIONS[i];
+      if (q && r.name.toLowerCase().indexOf(q) === -1 && r.id.toLowerCase().indexOf(q) === -1) {
+        continue;
+      }
+      var isAct = r.id === selectedRegionId;
+      html += '<div class="region-opt' + (isAct ? ' active' : '') + '" onclick="selectRegion(\\'' + r.id + '\\')">' +
+        '<span class="region-opt-left"><span class="region-flag">' + r.flag + '</span><span>' + r.name + '</span></span>' +
+        (isAct ? '<span class="region-check">✓</span>' : '') +
+      '</div>';
+    }
+    if (!html) {
+      html = '<div style="padding:12px;text-align:center;color:#71717a;font-size:12px;">No matching region found</div>';
+    }
+    listEl.innerHTML = html;
+  }
+
+  function toggleRegionDropdown() {
+    var dd = document.getElementById('regionDropdown');
+    var tr = document.getElementById('regionTrigger');
+    if (!dd || !tr) return;
+    var isOpen = dd.classList.contains('show');
+    if (isOpen) {
+      dd.classList.remove('show');
+      tr.classList.remove('open');
+    } else {
+      dd.classList.add('show');
+      tr.classList.add('open');
+      renderRegionList(document.getElementById('regionSearch').value || '');
+    }
+  }
+
+  function filterRegions() {
+    var val = document.getElementById('regionSearch').value || '';
+    renderRegionList(val);
+  }
+
+  function selectRegion(id) {
+    selectedRegionId = id;
+    for (var i = 0; i < LG_REGIONS.length; i++) {
+      if (LG_REGIONS[i].id === id) {
+        document.getElementById('selectedFlag').innerText = LG_REGIONS[i].flag;
+        document.getElementById('selectedName').innerText = LG_REGIONS[i].name;
+        break;
+      }
+    }
+    var dd = document.getElementById('regionDropdown');
+    var tr = document.getElementById('regionTrigger');
+    if (dd) dd.classList.remove('show');
+    if (tr) tr.classList.remove('open');
+    renderRegionList('');
+  }
+
+  function copyGuildDetails() {
+    var clanInput = document.getElementById('clanIdInput');
+    var clanId = (clanInput ? clanInput.value : '').replace(/[^0-9]/g, '').trim();
+    if (!clanId || clanId.length < 5 || clanId.length > 18) {
+      if (clanInput) {
+        clanInput.classList.remove('err');
+        void clanInput.offsetWidth;
+        clanInput.classList.add('err');
+        clanInput.focus();
+      }
+      showLgToast('⚠️ කරුණාකර වලංගු Clan ID එකක් ඇතුලත් කරන්න!', '#ef4444');
+      return;
+    }
+
+    var regObj = LG_REGIONS[0];
+    for (var i = 0; i < LG_REGIONS.length; i++) {
+      if (LG_REGIONS[i].id === selectedRegionId) {
+        regObj = LG_REGIONS[i];
+        break;
+      }
+    }
+
+    var payload = 'Order ID: ' + ORDER_ID + '\\nRegion: ' + regObj.id + ' (' + regObj.name + ')\\nClan ID: ' + clanId;
+
+    var onSuccess = function() {
+      var btn = document.getElementById('copyDetailsBtn');
+      var prev = document.getElementById('copiedPreview');
+      var codeEl = document.getElementById('copiedPreviewCode');
+      if (codeEl) codeEl.innerText = payload;
+      if (prev) prev.style.display = 'block';
+      if (btn) {
+        btn.classList.add('copied');
+        btn.innerHTML = '<span>✅ COPIED! දැන් Chat එකේ Paste කර එවන්න</span>';
+        setTimeout(function() {
+          btn.classList.remove('copied');
+          btn.innerHTML = '<span>⚡ Copy Guild Details (${botQty} BOTS)</span>';
+        }, 3200);
+      }
+      showLgToast('✓ Copied! දැන් Chat එකට Paste කර Send කරන්න', '#10b981');
+    };
+
+    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(payload).then(onSuccess).catch(function() {
+        fallbackCopyGuild(payload, onSuccess);
+      });
+    } else {
+      fallbackCopyGuild(payload, onSuccess);
+    }
+  }
+
+  function fallbackCopyGuild(text, done) {
+    try {
+      var sink = document.getElementById('lgClipSink');
+      if (sink) {
+        sink.value = text;
+        sink.select();
+        sink.setSelectionRange(0, 99999);
+        document.execCommand('copy');
+      }
+      done();
+    } catch (e) {
+      done();
+    }
+  }
+
+  renderRegionList('');
+</script>
+`;
+}
+
+// ---------------------------------------------------------------------------
+// YASHI HALLS — VIDEO 1: "LAUNCHING YOUR GROUP" LIVE PROGRESS HTML APP CARD
+// Matte dark charcoal + warm champagne gold UI with 3-step animated stepper,
+// real-time Accounts Generated (0/4 -> 4/4) & live ticking Elapsed Time clock
+// ---------------------------------------------------------------------------
+
+export interface GroupLaunchingCardOptions {
+  brandName?: string;
+  orderId: string;
+  regionId: string;
+  regionName: string;
+  clanId: string;
+  botQuantity?: number;
+  amountLkr?: number;
+  generatedCount: number;
+  requestedCount: number;
+  elapsedSeconds: number;
+  etaSeconds?: number;
+  stage: 'CONNECTING' | 'ACCOUNTS' | 'READY' | 'FAILED';
+  statusNote?: string;
+  groupId?: string;
+  height?: number;
+}
+
+export function generateGroupLaunchingHtml(opts: GroupLaunchingCardOptions): string {
+  const orderId = escapeHtml(opts.orderId || 'YH-ORDER');
+  const regionName = escapeHtml(opts.regionName || opts.regionId.toUpperCase());
+  const regionFlag = resolveRegionFlag(opts.regionId, opts.regionName);
+  const clanId = escapeHtml(opts.clanId || '—');
+  const requested = Math.max(1, Number(opts.requestedCount || opts.botQuantity || 4));
+  const generated = Math.max(0, Math.min(requested, Number(opts.generatedCount || 0)));
+  const startElapsed = Math.max(0, Math.floor(Number(opts.elapsedSeconds || 0)));
+  const pkgLabel = `${opts.botQuantity || requested} Glory Bots`;
+  const priceSub =
+    typeof opts.amountLkr === 'number' && opts.amountLkr > 0
+      ? `${orderId} · LKR ${opts.amountLkr.toLocaleString('en-US')}`
+      : orderId;
+  const height = opts.height || 545;
+
+  const isReady = opts.stage === 'READY';
+  const isFailed = opts.stage === 'FAILED';
+  const isSpinning = !isReady && !isFailed;
+
+  const initMins = Math.floor(startElapsed / 60);
+  const initSecs = startElapsed % 60;
+  const initClock = `${initMins}:${initSecs < 10 ? '0' : ''}${initSecs}`;
+
+  const statusText = isReady
+    ? opts.groupId
+      ? `Live · Group #${escapeHtml(opts.groupId)} is now active`
+      : 'Live · All accounts ready & deployed'
+    : isFailed
+      ? escapeHtml(opts.statusNote || 'Launch interrupted — please retry or contact support')
+      : typeof opts.etaSeconds === 'number' && opts.etaSeconds > 0
+        ? `Live · receiving account updates (ETA ~${opts.etaSeconds}s)`
+        : 'Live · receiving account updates';
+
+  const buttonText = isReady
+    ? '✓ Group Ready — Loading Live Clan Map...'
+    : isFailed
+      ? '✕ Launch Failed'
+      : 'Launching...';
+
+  return `
+<style>
+  @keyframes arcSpin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  @keyframes miniSpin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  * { box-sizing: border-box; }
+  .lyg-root {
+    width: 100%;
+    height: ${height}px;
+    max-height: ${height}px;
+    background: #0e0f11;
+    color: #f4f4f5;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 14px 13px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .lyg-top {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 10px;
+  }
+  .lyg-bolt {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    background: #1a1916;
+    border: 1px solid rgba(225, 204, 160, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .lyg-eyebrow {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 1.1px;
+    color: #b79f6e;
+    text-transform: uppercase;
+  }
+  .lyg-title {
+    font-size: 19px;
+    font-weight: 800;
+    color: #ffffff;
+    letter-spacing: -0.3px;
+    line-height: 1.15;
+    margin-top: 1px;
+  }
+  .lyg-sub {
+    font-size: 11.5px;
+    color: #8e9099;
+    margin-bottom: 12px;
+  }
+  .lyg-info-box {
+    background: #141518;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 2px 14px;
+    margin-bottom: 11px;
+  }
+  .lyg-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    gap: 10px;
+  }
+  .lyg-row:last-child { border-bottom: none; }
+  .lyg-k {
+    font-size: 12px;
+    color: #8e9099;
+    font-weight: 500;
+  }
+  .lyg-v {
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffffff;
+    text-align: right;
+  }
+  .lyg-v.mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    letter-spacing: 0.4px;
+  }
+  .lyg-v-sub {
+    font-size: 10px;
+    color: #8e9099;
+    font-weight: 500;
+    margin-top: 2px;
+  }
+  .lyg-step-box {
+    background: #141518;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 15px 14px 13px 14px;
+    margin-bottom: 11px;
+  }
+  .stepper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    padding: 0 4px;
+  }
+  .step-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 72px;
+  }
+  .step-icon-wrap {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step-icon-wrap.done {
+    background: rgba(34, 197, 94, 0.14);
+    border: 1.5px solid rgba(34, 197, 94, 0.5);
+    color: #4ade80;
+  }
+  .step-icon-wrap.active {
+    background: rgba(217, 185, 122, 0.14);
+    border: 1.5px solid rgba(217, 185, 122, 0.45);
+    color: #e2cb98;
+  }
+  .step-icon-wrap.active::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 15px;
+    border: 2px solid transparent;
+    border-top-color: #e2cb98;
+    border-right-color: rgba(226, 203, 152, 0.45);
+    animation: ${isSpinning ? 'arcSpin 1.3s linear infinite' : 'none'};
+  }
+  .step-icon-wrap.idle {
+    background: #1b1c20;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    color: #6b6e78;
+  }
+  .step-icon-wrap.err {
+    background: rgba(239, 68, 68, 0.16);
+    border: 1.5px solid rgba(239, 68, 68, 0.6);
+    color: #f87171;
+  }
+  .step-lbl {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #8e9099;
+    white-space: nowrap;
+  }
+  .step-lbl.active { color: #ffffff; font-weight: 800; }
+  .step-lbl.done { color: #86efac; }
+  .step-line {
+    flex: 1;
+    height: 1.5px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: -18px 4px 0 4px;
+  }
+  .step-line.lit {
+    background: linear-gradient(90deg, rgba(34, 197, 94, 0.65), rgba(226, 203, 152, 0.65));
+  }
+  .gen-caption {
+    font-size: 12px;
+    font-weight: 700;
+    color: #e4e4e7;
+    margin-bottom: 10px;
+  }
+  .gen-metrics {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding-bottom: 11px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 10px;
+  }
+  .gm-k {
+    font-size: 10.5px;
+    color: #8e9099;
+    margin-bottom: 3px;
+  }
+  .gm-v {
+    font-size: 20px;
+    font-weight: 800;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.3px;
+  }
+  .gm-right { text-align: right; }
+  .live-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: ${isReady ? '#4ade80' : isFailed ? '#f87171' : '#a1a1aa'};
+    font-weight: 600;
+  }
+  .mini-ring {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.14);
+    border-top-color: ${isReady ? '#4ade80' : isFailed ? '#ef4444' : '#e2cb98'};
+    animation: ${isSpinning ? 'miniSpin 0.9s linear infinite' : 'none'};
+    flex-shrink: 0;
+  }
+  .lyg-keep {
+    font-size: 10.5px;
+    color: #7c7e87;
+    margin-bottom: 8px;
+  }
+  .lyg-btn {
+    width: 100%;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13.5px;
+    font-weight: 800;
+    background: ${isReady
+      ? 'linear-gradient(180deg, #16a34a 0%, #15803d 100%)'
+      : isFailed
+        ? 'rgba(239, 68, 68, 0.22)'
+        : '#6e6552'};
+    color: ${isReady ? '#ffffff' : isFailed ? '#fca5a5' : '#111214'};
+    border: ${isFailed ? '1px solid rgba(239,68,68,0.5)' : 'none'};
+  }
+</style>
+
+<div class="lyg-root">
+  <div>
+    <div class="lyg-top">
+      <div class="lyg-bolt">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e2cb98" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+        </svg>
+      </div>
+      <div>
+        <div class="lyg-eyebrow">NEW GROUP</div>
+        <div class="lyg-title">Launching your group</div>
+      </div>
+    </div>
+
+    <div class="lyg-sub">Live updates from the launch service.</div>
+
+    <div class="lyg-info-box">
+      <div class="lyg-row">
+        <span class="lyg-k">Account region</span>
+        <span class="lyg-v">${regionFlag} ${regionName}</span>
+      </div>
+      <div class="lyg-row">
+        <span class="lyg-k">Clan ID</span>
+        <span class="lyg-v mono">${clanId}</span>
+      </div>
+      <div class="lyg-row">
+        <span class="lyg-k">Package</span>
+        <div style="text-align:right;">
+          <div class="lyg-v">${escapeHtml(pkgLabel)}</div>
+          <div class="lyg-v-sub">${priceSub}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lyg-step-box">
+      <div class="stepper">
+        <div class="step-node">
+          <div class="step-icon-wrap done">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <span class="step-lbl done">Connect</span>
+        </div>
+
+        <div class="step-line lit"></div>
+
+        <div class="step-node">
+          <div class="step-icon-wrap ${isReady ? 'done' : isFailed ? 'err' : 'active'}">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+          </div>
+          <span class="step-lbl ${isReady ? 'done' : 'active'}">Accounts</span>
+        </div>
+
+        <div class="step-line ${isReady ? 'lit' : ''}"></div>
+
+        <div class="step-node">
+          <div class="step-icon-wrap ${isReady ? 'done' : isFailed ? 'err' : 'idle'}">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <polyline points="9 12 11 14 15 10"></polyline>
+            </svg>
+          </div>
+          <span class="step-lbl ${isReady ? 'done' : ''}">Group ready</span>
+        </div>
+      </div>
+
+      <div class="gen-caption">${isReady ? `Accounts generated · ${requested} of ${requested}` : `Generating accounts · ${generated} of ${requested}`}</div>
+
+      <div class="gen-metrics">
+        <div>
+          <div class="gm-k">Accounts generated</div>
+          <div class="gm-v">${isReady ? requested : generated} / ${requested}</div>
+        </div>
+        <div class="gm-right">
+          <div class="gm-k">Elapsed time</div>
+          <div class="gm-v" id="lygClock">${initClock}</div>
+        </div>
+      </div>
+
+      <div class="live-row">
+        <span class="mini-ring"></span>
+        <span>${statusText}</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="lyg-keep">${isReady ? 'Your live Clan · Group Map card is ready below.' : 'Keep this page open while the launch is in progress.'}</div>
+    <div class="lyg-btn">${buttonText}</div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    var spinning = ${isSpinning ? 'true' : 'false'};
+    if (!spinning) return;
+    var sec = ${startElapsed};
+    var el = document.getElementById('lygClock');
+    if (!el) return;
+    setInterval(function() {
+      sec += 1;
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+    }, 1000);
+  })();
+</script>
+`;
+}
+
+// ---------------------------------------------------------------------------
+// YASHI HALLS — VIDEO 2: "CLAN · GROUP MAP" LIVE GLORY DETAILS HTML APP CARD
+// Matte dark obsidian + warm gold ribbon + LV shield + Weekly Top 100 card +
+// emerald green GROUP GLORY + split bottom CLAN / RUNNING GROUP cards
+// ---------------------------------------------------------------------------
+
+export interface ClanGroupBotAccountItem {
+  accountId?: string;
+  nickname?: string;
+  glory?: number;
+  level?: number | string;
+  creditScore?: number | string;
+}
+
+export interface ClanGroupMapCardOptions {
+  brandName?: string;
+  orderId: string;
+  groupId: string;
+  clanId: string;
+  clanName: string;
+  clanSlogan?: string;
+  regionCode: string;
+  clanLevel: number | string;
+  season?: string | number;
+  weekLabel?: string | number;
+  clanTotalGlory: number;
+  weeklyGlory: number;
+  groupGlory: number;
+  memberNum?: number | string;
+  capacity?: number | string;
+  captainId?: string | number;
+  weekEndsAt?: string;
+  inTop100?: boolean;
+  leaderboardRank?: number;
+  cutoffWeeklyGlory?: number;
+  runningBots?: number;
+  totalBots?: number;
+  runningGroups?: number;
+  totalGroups?: number;
+  groupStatus?: string;
+  uptime?: string;
+  lastUpdatedText?: string;
+  refreshIntervalSec?: number;
+  botAccounts?: ClanGroupBotAccountItem[];
+  height?: number;
+}
+
+function formatWeekCountdown(endsAtIso?: string): { text: string; remainingMinutes: number } {
+  if (!endsAtIso) return { text: 'Live weekly cycle active', remainingMinutes: -1 };
+  const targetMs = Date.parse(endsAtIso);
+  if (!Number.isFinite(targetMs)) return { text: 'Live weekly cycle active', remainingMinutes: -1 };
+  const diffMin = Math.max(0, Math.floor((targetMs - Date.now()) / 60000));
+  const days = Math.floor(diffMin / 1440);
+  const hours = Math.floor((diffMin % 1440) / 60);
+  const mins = diffMin % 60;
+  if (days > 0) return { text: `Week ends in ${days}d ${hours}h ${mins}m`, remainingMinutes: diffMin };
+  return { text: `Week ends in ${hours}h ${mins}m`, remainingMinutes: diffMin };
+}
+
+export function generateClanGroupMapHtml(opts: ClanGroupMapCardOptions): string {
+  const clanName = escapeHtml(opts.clanName || `CLAN ${opts.clanId}`);
+  const clanSlogan = String(opts.clanSlogan || '').trim();
+  const clanId = escapeHtml(opts.clanId || '—');
+  const groupId = escapeHtml(opts.groupId || '—');
+  const orderId = escapeHtml(opts.orderId || '—');
+  const regCode = escapeHtml((opts.regionCode || 'SG').toUpperCase());
+  const regFlag = resolveRegionFlag(opts.regionCode || 'sg', opts.regionCode || 'sg');
+  const levelStr = escapeHtml(String(opts.clanLevel ?? '—'));
+  const seasonStr = opts.season !== undefined && opts.season !== '' ? escapeHtml(String(opts.season)) : '';
+  const weekStr = opts.weekLabel !== undefined && opts.weekLabel !== '' ? escapeHtml(String(opts.weekLabel)) : '';
+  const clanTotalFmt = Number(opts.clanTotalGlory || 0).toLocaleString('en-US');
+  const weeklyNum = Number(opts.weeklyGlory || 0);
+  const weeklyFmt = weeklyNum.toLocaleString('en-US');
+  const groupGloryNum = Number(opts.groupGlory || 0);
+  const groupGloryFmt = groupGloryNum.toLocaleString('en-US');
+  const membersStr =
+    opts.memberNum !== undefined && opts.capacity !== undefined
+      ? `${opts.memberNum}/${opts.capacity}`
+      : opts.memberNum !== undefined
+        ? `${opts.memberNum}/50`
+        : '—';
+  const captainStr = escapeHtml(opts.captainId ? String(opts.captainId) : '—');
+  const isRunning = String(opts.groupStatus || 'running').toLowerCase() === 'running';
+  const runningGroups = isRunning ? Math.max(1, Number(opts.runningGroups || 1)) : 0;
+  const totalGroups = Math.max(1, Number(opts.totalGroups || 1));
+  const runningBots = Number(opts.runningBots ?? (isRunning ? opts.totalBots || 4 : 0));
+  const totalBots = Math.max(1, Number(opts.totalBots || 4));
+  const uptimeStr = opts.uptime ? escapeHtml(opts.uptime) : isRunning ? 'Live' : 'Stopped';
+  const updatedStr = escapeHtml(opts.lastUpdatedText || 'Just now');
+  const refreshSec = Math.max(5, Number(opts.refreshIntervalSec || 15));
+  const countdown = formatWeekCountdown(opts.weekEndsAt);
+  const height = opts.height || 685;
+
+  const inTop = Boolean(opts.inTop100);
+  const rank = Number(opts.leaderboardRank || 0);
+  const cutoff = Number(opts.cutoffWeeklyGlory || 0);
+  const cutoffPct =
+    cutoff > 0 ? Math.min(100, Math.max(4, Math.round((weeklyNum / cutoff) * 100))) : 12;
+  const remainingToTop100 = cutoff > weeklyNum ? cutoff - weeklyNum : 0;
+
+  const metaParts = [
+    `ID: ${clanId}`,
+    regCode,
+    seasonStr ? `S${seasonStr}` : '',
+    weekStr ? `W${weekStr}` : '',
+    `${totalGroups} ${totalGroups === 1 ? 'GROUP' : 'GROUPS'}`,
+  ].filter(Boolean);
+
+  const leaderboardHtml =
+    inTop && rank > 0
+      ? `
+        <div class="lb-row dim">
+          <span>#${rank - 1}</span>
+          <span class="lb-bar"></span>
+        </div>
+        <div class="lb-row me">
+          <span class="lb-rank">#${rank}</span>
+          <span class="lb-name">${clanName}</span>
+          <span class="lb-tag">✓ Your clan</span>
+        </div>
+        <div class="lb-row dim">
+          <span>#${rank + 1}</span>
+          <span class="lb-bar"></span>
+        </div>`
+      : `
+        <div class="lb-row me" style="margin-bottom:5px;">
+          <span class="lb-rank" style="font-size:11px;">${inTop ? '🏆 TOP 100' : 'TARGET'}</span>
+          <span class="lb-name">${clanName}</span>
+          <span class="lb-tag">✓ Live</span>
+        </div>
+        <div class="lb-prog-track"><div class="lb-prog-fill" style="width:${cutoffPct}%;"></div></div>
+        <div class="lb-cutoff-row">
+          <span>Weekly: <strong>${weeklyFmt}</strong></span>
+          <span>Top 100: <strong>${cutoff > 0 ? cutoff.toLocaleString('en-US') : 'Live'}</strong></span>
+        </div>`;
+
+  // Active Bot Squad Live Telemetry rows (real per-bot FFGlory details or live syncing slots)
+  const rawBots = Array.isArray(opts.botAccounts) ? opts.botAccounts : [];
+  const maxVisibleBots = 4;
+  const extraBotsCount = rawBots.length > maxVisibleBots ? rawBots.length - maxVisibleBots : 0;
+  let botRowsHtml = '';
+
+  if (rawBots.length > 0) {
+    botRowsHtml = rawBots
+      .slice(0, maxVisibleBots)
+      .map((bot, idx) => {
+        const displayName = escapeHtml(
+          bot.nickname ? String(bot.nickname) : bot.accountId ? `UID ${bot.accountId}` : `Bot Unit #${idx + 1}`
+        );
+        const subMetaParts = [
+          bot.accountId && bot.nickname ? `ID ${escapeHtml(String(bot.accountId))}` : '',
+          bot.level !== undefined && bot.level !== '' ? `LV.${escapeHtml(String(bot.level))}` : '',
+          bot.creditScore !== undefined && bot.creditScore !== '' ? `CS ${escapeHtml(String(bot.creditScore))}` : '',
+        ].filter(Boolean);
+        const subMeta = subMetaParts.length > 0 ? subMetaParts.join(' · ') : 'Active in clan';
+        const botGloryNum = Number(bot.glory || 0);
+        const botGloryFmt = botGloryNum.toLocaleString('en-US');
+        return `
+          <div class="bot-row">
+            <div class="bot-left">
+              <span class="bot-idx">#${idx + 1}</span>
+              <span class="bot-dot"></span>
+              <div class="bot-info">
+                <div class="bot-name">${displayName}</div>
+                <div class="bot-meta">${subMeta}</div>
+              </div>
+            </div>
+            <div class="bot-glory">+${botGloryFmt}</div>
+          </div>`;
+      })
+      .join('');
+    if (extraBotsCount > 0) {
+      botRowsHtml += `<div class="bot-more">+${extraBotsCount} additional active bots farming in this group</div>`;
+    }
+  } else {
+    const slotCount = Math.min(4, Math.max(1, totalBots));
+    botRowsHtml = Array.from({ length: slotCount }, (_, idx) => {
+      const slotActive = idx < runningBots;
+      return `
+        <div class="bot-row">
+          <div class="bot-left">
+            <span class="bot-idx">#${idx + 1}</span>
+            <span class="bot-dot ${slotActive ? '' : 'idle'}"></span>
+            <div class="bot-info">
+              <div class="bot-name">Glory Bot Slot #${idx + 1}</div>
+              <div class="bot-meta">${slotActive ? 'Syncing live bot telemetry from FFGlory...' : 'Standby slot'}</div>
+            </div>
+          </div>
+          <div class="bot-badge ${slotActive ? '' : 'idle'}">${slotActive ? 'SYNC' : 'WAIT'}</div>
+        </div>`;
+    }).join('');
+  }
+
+  return `
+<style>
+  @keyframes liveDotPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(1.25); }
+  }
+  * { box-sizing: border-box; }
+  .cgm-root {
+    width: 100%;
+    height: ${height}px;
+    max-height: ${height}px;
+    background: #0d0e11;
+    color: #f4f4f5;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 12px 12px 11px 12px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .cgm-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2px;
+    flex-shrink: 0;
+  }
+  .cgm-eyebrow {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 1.4px;
+    color: #8c8f99;
+    text-transform: uppercase;
+  }
+  .cgm-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cgm-running-pill {
+    font-size: 10px;
+    font-weight: 700;
+    color: #d4d4d8;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .live-chip {
+    font-size: 8.5px;
+    font-weight: 900;
+    letter-spacing: 0.6px;
+    color: #4ade80;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    padding: 2px 6px;
+    border-radius: 6px;
+    text-transform: uppercase;
+  }
+  .gdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: ${isRunning ? '#22c55e' : '#f59e0b'};
+    box-shadow: 0 0 8px ${isRunning ? '#22c55e' : '#f59e0b'};
+    animation: liveDotPulse 1.6s ease-in-out infinite;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .cgm-main {
+    position: relative;
+    background:
+      radial-gradient(circle at 85% 0%, rgba(234, 179, 8, 0.14), transparent 45%),
+      linear-gradient(180deg, #16171b 0%, #121316 100%);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 15px;
+    padding: 13px 13px 11px 13px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .squad-ribbon {
+    position: absolute;
+    top: 0;
+    right: 0;
+    background: linear-gradient(135deg, #facc15, #ca8a04);
+    color: #111214;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.7px;
+    padding: 4px 10px 4px 11px;
+    border-bottom-left-radius: 10px;
+    text-transform: uppercase;
+  }
+  .clan-name-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-right: 98px;
+  }
+  .clan-name {
+    font-size: 18px;
+    font-weight: 900;
+    color: #ffffff;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .clan-slogan {
+    font-size: 10px;
+    color: #d4c49c;
+    font-style: italic;
+    margin-top: 2px;
+    padding-right: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .clan-meta {
+    font-size: 10px;
+    color: #8c8f99;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    margin-top: 3px;
+    margin-bottom: 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .total-lbl {
+    font-size: 10.5px;
+    color: #9ca3af;
+    font-weight: 600;
+  }
+  .total-num {
+    font-size: 26px;
+    font-weight: 900;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.5px;
+    line-height: 1.15;
+    margin-top: 1px;
+  }
+  .week-end {
+    font-size: 10.5px;
+    color: #a1a1aa;
+    margin-top: 3px;
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+  .mid-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 11px;
+  }
+  .shield-badge {
+    width: 52px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .lv-pill {
+    margin-top: -8px;
+    background: #181611;
+    border: 1px solid #eab308;
+    color: #fde047;
+    font-size: 9.5px;
+    font-weight: 900;
+    padding: 1px 7px;
+    border-radius: 6px;
+    letter-spacing: 0.4px;
+  }
+  .lb-card {
+    flex: 1;
+    min-width: 0;
+    background: #101114;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 11px;
+    padding: 8px 10px;
+  }
+  .lb-head {
+    font-size: 10px;
+    font-weight: 800;
+    color: #d4d4d8;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .lb-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    padding: 3px 5px;
+    border-radius: 6px;
+  }
+  .lb-row.dim { color: #52525b; }
+  .lb-row.me {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(226, 203, 152, 0.25);
+    color: #ffffff;
+  }
+  .lb-bar {
+    flex: 1;
+    height: 4px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .lb-rank { font-weight: 900; color: #facc15; flex-shrink: 0; }
+  .lb-name {
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .lb-tag { font-size: 9px; color: #86efac; font-weight: 700; flex-shrink: 0; }
+  .lb-prog-track {
+    width: 100%;
+    height: 5px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    margin-bottom: 5px;
+  }
+  .lb-prog-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, #eab308, #4ade80);
+  }
+  .lb-cutoff-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9.5px;
+    color: #9ca3af;
+  }
+  .lb-cutoff-row strong { color: #f4f4f5; }
+  .metrics-foot {
+    display: grid;
+    grid-template-columns: 0.9fr 1.15fr 1.2fr;
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    align-items: end;
+  }
+  .mf-k {
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.7px;
+    color: #8c8f99;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .mf-v {
+    font-size: 13px;
+    font-weight: 800;
+    color: #f4f4f5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .mf-right { text-align: right; }
+  .mf-glory {
+    font-size: 20px;
+    font-weight: 900;
+    color: #4ade80;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.4px;
+    line-height: 1.05;
+  }
+  .split-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+    flex-shrink: 0;
+  }
+  .sub-card {
+    background: #141518;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 13px;
+    padding: 10px 11px;
+  }
+  .sub-card.running {
+    border-color: rgba(226, 203, 152, 0.32);
+    background: radial-gradient(circle at 90% 10%, rgba(34, 197, 94, 0.09), transparent 55%), #141518;
+  }
+  .sc-eyebrow {
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.9px;
+    color: #8c8f99;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 4px;
+  }
+  .sub-card.running .sc-eyebrow { color: #d4c49c; }
+  .sc-title {
+    font-size: 12px;
+    font-weight: 800;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 6px;
+  }
+  .sc-title.mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #e4e4e7;
+  }
+  .sc-k {
+    font-size: 9.5px;
+    color: #8c8f99;
+    margin-bottom: 2px;
+  }
+  .sc-val {
+    font-size: 17px;
+    font-weight: 900;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+  }
+  .sc-sub {
+    font-size: 9.5px;
+    color: #86efac;
+    font-weight: 700;
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .squad-panel {
+    background: #131418;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 13px;
+    padding: 10px 11px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .squad-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 7px;
+  }
+  .squad-title {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.9px;
+    color: #d4c49c;
+    text-transform: uppercase;
+  }
+  .squad-count {
+    font-size: 9px;
+    font-weight: 800;
+    color: #86efac;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.28);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  .bot-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .bot-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 9px;
+    padding: 6px 8px;
+  }
+  .bot-left {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+  }
+  .bot-idx {
+    font-size: 9px;
+    font-weight: 900;
+    color: #facc15;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    width: 18px;
+    flex-shrink: 0;
+  }
+  .bot-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #22c55e;
+    box-shadow: 0 0 6px #22c55e;
+    flex-shrink: 0;
+  }
+  .bot-dot.idle {
+    background: #71717a;
+    box-shadow: none;
+  }
+  .bot-info {
+    min-width: 0;
+    flex: 1;
+  }
+  .bot-name {
+    font-size: 11px;
+    font-weight: 800;
+    color: #f4f4f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bot-meta {
+    font-size: 9px;
+    color: #8c8f99;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bot-glory {
+    font-size: 12px;
+    font-weight: 900;
+    color: #4ade80;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    flex-shrink: 0;
+  }
+  .bot-badge {
+    font-size: 8.5px;
+    font-weight: 900;
+    letter-spacing: 0.6px;
+    color: #4ade80;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    padding: 2px 6px;
+    flex-shrink: 0;
+  }
+  .bot-badge.idle {
+    color: #a1a1aa;
+    background: rgba(161, 161, 170, 0.1);
+    border-color: rgba(161, 161, 170, 0.22);
+  }
+  .bot-more {
+    font-size: 9px;
+    color: #a1a1aa;
+    text-align: center;
+    padding-top: 2px;
+  }
+  .sync-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #111216;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    padding: 7px 10px;
+    font-size: 9.5px;
+    color: #a1a1aa;
+    flex-shrink: 0;
+  }
+  .sync-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .sync-lbl {
+    font-weight: 800;
+    color: #e4e4e7;
+    white-space: nowrap;
+  }
+  .sync-right {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9.5px;
+    color: #d4c49c;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+</style>
+
+<div class="cgm-root">
+  <div class="cgm-bar">
+    <div class="cgm-eyebrow">CLAN · GROUP MAP</div>
+    <div class="cgm-bar-right">
+      <div class="cgm-running-pill">
+        <span class="gdot"></span>
+        <span>${runningGroups} running / ${totalGroups} groups</span>
+      </div>
+      <span class="live-chip">${isRunning ? `${refreshSec}s LIVE` : 'DONE'}</span>
+    </div>
+  </div>
+
+  <div class="cgm-main">
+    <div class="squad-ribbon">${inTop ? '★ TOP 100 CLAN!' : '★ SUPER SQUAD!'}</div>
+
+    <div class="clan-name-row">
+      <div class="clan-name">${clanName}</div>
+    </div>
+    ${clanSlogan ? `<div class="clan-slogan">“${escapeHtml(clanSlogan)}”</div>` : ''}
+    <div class="clan-meta">${metaParts.join(' &nbsp;|&nbsp; ')}</div>
+
+    <div class="total-lbl">Clan total glory</div>
+    <div class="total-num">${clanTotalFmt}</div>
+    <div class="week-end" id="cgmWeekEnd">${escapeHtml(countdown.text)}</div>
+
+    <div class="mid-row">
+      <div class="shield-badge">
+        <svg width="42" height="44" viewBox="0 0 44 48" fill="none">
+          <path d="M22 3L39 10V23C39 33.8 31.6 42.2 22 45C12.4 42.2 5 33.8 5 23V10L22 3Z" fill="url(#shGrad)" stroke="#facc15" stroke-width="2.2"/>
+          <path d="M22 10L32 14.5V22.5C32 29.4 27.6 34.8 22 37C16.4 34.8 12 29.4 12 22.5V14.5L22 10Z" fill="#181510" stroke="#fde047" stroke-width="1.2"/>
+          <polygon points="22,15 24.1,19.4 29,20 25.4,23.3 26.3,28 22,25.7 17.7,28 18.6,23.3 15,20 19.9,19.4" fill="#facc15"/>
+          <defs>
+            <linearGradient id="shGrad" x1="5" y1="3" x2="39" y2="45" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#eab308"/>
+              <stop offset="1" stop-color="#854d0e"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="lv-pill">LV.${levelStr}</div>
+      </div>
+
+      <div class="lb-card">
+        <div class="lb-head"><span>${regFlag}</span><span>${regCode} · Weekly top 100</span></div>
+        ${leaderboardHtml}
+      </div>
+    </div>
+
+    <div class="metrics-foot">
+      <div>
+        <div class="mf-k">👥 MEMBERS</div>
+        <div class="mf-v">${escapeHtml(membersStr)}</div>
+      </div>
+      <div>
+        <div class="mf-k">🛡️ CAPTAIN</div>
+        <div class="mf-v">${captainStr}</div>
+      </div>
+      <div class="mf-right">
+        <div class="mf-k">🏆 GROUP GLORY</div>
+        <div class="mf-glory">${groupGloryFmt}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="split-bottom">
+    <div class="sub-card">
+      <div class="sc-eyebrow">CLAN · WEEKLY</div>
+      <div class="sc-title">${clanName}</div>
+      <div class="sc-k">Weekly glory</div>
+      <div class="sc-val">${weeklyFmt}</div>
+      <div class="sc-sub" style="color:#a1a1aa;">${
+        inTop && rank > 0
+          ? `Rank #${rank} in ${regCode}`
+          : remainingToTop100 > 0
+            ? `Gap: ${remainingToTop100.toLocaleString('en-US')} to Top 100`
+            : `Updated: ${updatedStr}`
+      }</div>
+    </div>
+
+    <div class="sub-card running">
+      <div class="sc-eyebrow"><span class="gdot"></span><span>${isRunning ? 'RUNNING GROUP' : 'GROUP STATUS'}</span></div>
+      <div class="sc-title mono">#${groupId}</div>
+      <div class="sc-k">Live group output</div>
+      <div class="sc-val">${groupGloryFmt} <span style="font-size:11px;font-weight:700;color:#a1a1aa;">glory</span></div>
+      <div class="sc-sub">${runningBots}/${totalBots} bots · ${uptimeStr} →</div>
+    </div>
+  </div>
+
+  <div class="squad-panel">
+    <div class="squad-head">
+      <div class="squad-title">🤖 BOT SQUAD · LIVE TELEMETRY</div>
+      <div class="squad-count">${runningBots}/${totalBots} ONLINE</div>
+    </div>
+    <div class="bot-list">
+      ${botRowsHtml}
+    </div>
+  </div>
+
+  <div class="sync-foot">
+    <div class="sync-left">
+      <span class="gdot"></span>
+      <span class="sync-lbl">Updated ${updatedStr}</span>
+    </div>
+    <div class="sync-right">${
+      isRunning
+        ? `<span id="cgmNextSync">Next sync: ${refreshSec}s</span> · ${orderId}`
+        : `Final sync · ${orderId}`
+    }</div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    var rem = ${countdown.remainingMinutes};
+    var el = document.getElementById('cgmWeekEnd');
+    if (rem > 0 && el) {
+      setInterval(function() {
+        rem = Math.max(0, rem - 1);
+        var d = Math.floor(rem / 1440);
+        var h = Math.floor((rem % 1440) / 60);
+        var m = rem % 60;
+        el.textContent = d > 0 ? ('Week ends in ' + d + 'd ' + h + 'h ' + m + 'm') : ('Week ends in ' + h + 'h ' + m + 'm');
+      }, 60000);
+    }
+
+    var syncEl = document.getElementById('cgmNextSync');
+    var sec = ${refreshSec};
+    if (syncEl && ${isRunning ? 'true' : 'false'}) {
+      setInterval(function() {
+        sec = sec > 1 ? sec - 1 : ${refreshSec};
+        syncEl.textContent = 'Next sync: ' + sec + 's';
+      }, 1000);
+    }
+  })();
+</script>
+`;
+}
+
+
+
 
 

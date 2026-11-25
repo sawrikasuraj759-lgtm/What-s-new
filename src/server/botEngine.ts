@@ -36,6 +36,9 @@ import {
   generateGroupGoodbyeHtmlApp,
   generateBusinessCatalogHtmlApp,
   calculateBusinessCatalogHtmlHeight,
+  getEmbeddedBankBannerDataUri,
+  generatePaymentBankDetailsHtml,
+  generatePaymentProcessingHtml,
   YASHI_USER_TEST1_HTML,
   TEXT_TOOLS_CATALOG,
   DOWNLOADS_CATALOG,
@@ -50,7 +53,28 @@ import {
 } from "./htmlAppHelper";
 import { handleExpandedCommands } from "./expandedCommands";
 import { getBusinessStore, resolveLocalAssetPath, sanitizePanelCommandSlug, BusinessProduct, BusinessPricePackage, BusinessStoreData } from "./businessStore";
-import { getBusinessPayState, createBusinessPayOrder, getApkBinaryPath, getApkBinaryInfo, buildBotLinkKey, BusinessPayEvent, BusinessPayOrder } from "./businessPayService";
+import { getBusinessPayState, createBusinessPayOrder, estimateAmountLkr, getApkBinaryPath, getApkBinaryInfo, buildBotLinkKey, BusinessPayEvent, BusinessPayOrder } from "./businessPayService";
+import {
+  getAutoOrderState,
+  findProductMapping,
+  createAutoOrder,
+  createGuildServiceOrder,
+  getActiveCustomerPendingOrder,
+  getActiveCustomerAwaitingGuildConfigOrder,
+  processCustomerReceiptUpload,
+  submitGuildConfiguration,
+  adminApproveOrderPayment,
+  adminRejectOrCancelOrder,
+  sendLiveGloryCardToWhatsApp,
+  sendPhase5GuildConfigCard,
+  type AutoOrderWhatsAppDispatcher,
+  type GuildBotQuantity,
+} from "./autoOrderService";
+import {
+  renderWelcomeCardPng,
+  renderQuantityCardPng,
+  renderPaymentCardPng,
+} from "./guildCardRenderer";
 import {
   parsePackAndAuthor,
   imageToSticker,
@@ -91,12 +115,32 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
   userId: string;
   sessionDir: string;
   configFile: string;
-  businessChatState: Map<string, { step: "welcome" | "platform" | "catalog" | "package"; productId?: string; updatedAt: number }>;
+  welcomedCustomersFile: string;
+  welcomedBusinessCustomers: Set<string>;
+  businessChatState: Map<
+    string,
+    {
+      step:
+        | "welcome"
+        | "platform"
+        | "catalog"
+        | "package"
+        | "awaiting_clan_id"
+        | "guild_qty"
+        | "guild_awaiting_receipt"
+        | "guild_awaiting_clan_id";
+      productId?: string;
+      packageId?: string;
+      orderId?: string;
+      regionId?: string;
+      updatedAt: number;
+    }
+  >;
   businessThumbCache: Map<string, string>;
   pendingFilmChoices: Map<string, { movieTitle: string; query: string; opt1Cmd: string; opt2Cmd: string; onlyDub: boolean; ts: number }>;
   pendingMediaChoices: Map<string, { baseCmd: string; query: string; title?: string; opt1Cmd: string; opt2Cmd: string; ts: number }>;
 
-  constructor(userId="default"){this.sock=null;this.logs=[];this.maxLogs=500;this.startTime=null;this.reconnectAttempts=0;this.maxReconnectAttempts=20;this.isExplicitlyStopped=true;this.reconnectTimer=null;this.activePairingPhone=null;this.customPairingCodeRequested=null;this.groupWarnings=new Map;this.activeQuizSessions=new Map;this.processedCalls=new Set;this.processedMessageIds=new Set;this.commandCooldowns=new Map;this.rawQrString=null;this.requestedFromJid=null;this.isQrReady=false;this.voiceCooldownMap=new Map;this.chatMemory=new Map;this.businessChatState=new Map;this.businessThumbCache=new Map;this.pendingFilmChoices=new Map;this.pendingMediaChoices=new Map;void cleanupStaleMovieTempFiles().catch(()=>{});this.start247Watchdog();this.chatAiCooldownMap=new Map;this.smartReplyCooldownMap=new Map;this.lastWelcomeSentTime=0;this.isStarting=false;this.isFreshPairing=false;this.isPairingCodeInFlight=false;
+  constructor(userId="default"){this.sock=null;this.logs=[];this.maxLogs=500;this.startTime=null;this.reconnectAttempts=0;this.maxReconnectAttempts=20;this.isExplicitlyStopped=true;this.reconnectTimer=null;this.activePairingPhone=null;this.customPairingCodeRequested=null;this.groupWarnings=new Map;this.activeQuizSessions=new Map;this.processedCalls=new Set;this.processedMessageIds=new Set;this.commandCooldowns=new Map;this.rawQrString=null;this.requestedFromJid=null;this.isQrReady=false;this.voiceCooldownMap=new Map;this.chatMemory=new Map;this.welcomedBusinessCustomers=new Set;this.businessChatState=new Map;this.businessThumbCache=new Map;this.pendingFilmChoices=new Map;this.pendingMediaChoices=new Map;void cleanupStaleMovieTempFiles().catch(()=>{});this.start247Watchdog();this.chatAiCooldownMap=new Map;this.smartReplyCooldownMap=new Map;this.lastWelcomeSentTime=0;this.isStarting=false;this.isFreshPairing=false;this.isPairingCodeInFlight=false;
     this.cachedLogoBuffer = null;
     this.lastCachedLogoUrl = '';
     const initialCandidates = [
@@ -141,7 +185,7 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
         mode: "public",
         ownerNumber: "94740712934",
         autoReadStatus: true,
-        plan: "pro",
+        plan: "mini",
         antiLink: false,
         antiSpam: false,
         welcomeMessage: true,
@@ -158,7 +202,7 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
           {
             id: "rule-price",
             keyword: "මිල",
-            reply: "💰 *YASHI HALLS Bot මිල ගණන්:*\n• PRO Plan: Unlocked\nDashboard එකෙන් ක්ෂණිකව සක්‍රිය කරගත හැක!"
+            reply: "💰 *YASHI HALLS Bot මිල ගණන්:*\n• PRO Plan: LKR 500/mo\n• BUSINESS Plan: LKR 1,000/mo\nSubscription පිටුවෙන් Manual Bank Transfer මගින් සක්‍රීය කරගත හැක!"
           },
           {
             id: "rule-channel",
@@ -169,10 +213,10 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
       },
       quotas: {
         mediaRequestsUsed: 0,
-        mediaQuotaMax: 999999,
+        mediaQuotaMax: 50,
         aiRequestsUsed: 0,
-        aiQuotaMax: 999999,
-        maxBotSlots: 10
+        aiQuotaMax: 100,
+        maxBotSlots: 1
       }
     };
     this.userId = userId;
@@ -182,13 +226,15 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
     }
     if (safeId.endsWith("__business")) {
       this.state.config.botName = "YASHI BUSINESS";
-      this.state.config.plan = "business";
+      this.state.config.plan = "mini";
     }
     this.sessionDir = path.resolve(process.cwd(), "data", "sessions", safeId, "whatsapp_session");
     this.configFile = path.resolve(process.cwd(), "data", "sessions", safeId, "bot_config.json");
+    this.welcomedCustomersFile = path.resolve(process.cwd(), "data", "sessions", safeId, "welcomed_customers.json");
 
     this.addLog("INFO", `BotEngine initialized for user: ${userId} (session: ${safeId}) with Dual Plan support (MINI & PRO).`);
     this.loadSavedConfig();
+    this.loadWelcomedBusinessCustomers();
     this.checkExistingSession();
   }
   static {
@@ -224,12 +270,76 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
       if (fs.existsSync(this.configFile)) {
         const raw = fs.readFileSync(this.configFile, "utf-8");
         const parsed = JSON.parse(raw);
-        this.state.config = { ...this.state.config, ...parsed, plan: this.userId?.endsWith("__business") ? "business" : "pro" };
-        this.state.quotas.mediaQuotaMax = 999999;
-        this.state.quotas.aiQuotaMax = 999999;
-        this.addLog("INFO", `Loaded persisted bot settings: AutoReply=${this.state.config.smartAutoReply ? "ON" : "OFF"}, ChannelReact=${this.state.config.channelAutoReact ? "ON" : "OFF"}`);
+        const restoredPlan = parsed.plan === "business" ? "business" : parsed.plan === "pro" ? "pro" : "mini";
+        this.state.config = { ...this.state.config, ...parsed, plan: restoredPlan };
+        this.setPlan(restoredPlan, false);
+        this.addLog("INFO", `Loaded persisted bot settings: Plan=${restoredPlan.toUpperCase()}, AutoReply=${this.state.config.smartAutoReply ? "ON" : "OFF"}`);
       }
     } catch {}
+  }
+  loadWelcomedBusinessCustomers() {
+    try {
+      if (this.welcomedCustomersFile && fs.existsSync(this.welcomedCustomersFile)) {
+        const raw = fs.readFileSync(this.welcomedCustomersFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            if (typeof entry === "string" && entry.trim()) {
+              this.welcomedBusinessCustomers.add(entry.trim());
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  saveWelcomedBusinessCustomers() {
+    try {
+      if (!this.welcomedCustomersFile) return;
+      const dir = path.dirname(this.welcomedCustomersFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(
+        this.welcomedCustomersFile,
+        JSON.stringify(Array.from(this.welcomedBusinessCustomers)),
+        "utf-8"
+      );
+    } catch {}
+  }
+  getBusinessCustomerIdentityKeys(jid: string, msg?: any): string[] {
+    const keys = new Set<string>();
+    const addCandidate = (raw?: string) => {
+      const s = String(raw || "").trim().toLowerCase();
+      if (!s) return;
+      keys.add(s);
+      const userPart = s.split("@")[0].split(":")[0].trim();
+      if (userPart) keys.add(userPart);
+      const digits = userPart.replace(/\D/g, "");
+      if (digits.length >= 7) keys.add(`num:${digits}`);
+    };
+    addCandidate(jid);
+    addCandidate(msg?.key?.remoteJid);
+    addCandidate(msg?.key?.remoteJidAlt);
+    addCandidate(msg?.key?.participant);
+    addCandidate(msg?.key?.participantAlt);
+    return Array.from(keys);
+  }
+  hasReceivedBusinessWelcome(jid: string, msg?: any): boolean {
+    const keys = this.getBusinessCustomerIdentityKeys(jid, msg);
+    return keys.some((k) => this.welcomedBusinessCustomers.has(k));
+  }
+  markBusinessCustomerWelcomed(jid: string, msg?: any) {
+    const keys = this.getBusinessCustomerIdentityKeys(jid, msg);
+    let added = false;
+    for (const k of keys) {
+      if (!this.welcomedBusinessCustomers.has(k)) {
+        this.welcomedBusinessCustomers.add(k);
+        added = true;
+      }
+    }
+    if (added) {
+      this.saveWelcomedBusinessCustomers();
+    }
   }
   saveConfigToFile() {
     try {
@@ -298,7 +408,7 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
   getLogs() {
     return [...this.logs];
   }
-  setPlan(plan) {
+  setPlan(plan, persist = true) {
     this.state.config.plan = plan;
     if (plan === "business") {
       this.state.config.botName = "YASHI HALLS BUSINESS";
@@ -315,15 +425,18 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
       this.state.quotas.maxBotSlots = 5;
       this.state.config.antiLink = true;
       this.state.config.antiSpam = true;
-      this.addLog("INFO", "💎 Tier upgraded to YASHI HALLS PRO! All advanced features, multi-slots & unlimited quotas unlocked.");
+      this.addLog("INFO", "💎 Tier upgraded to YASHI HALLS PRO! All advanced features, multi-slots & PRO quotas unlocked.");
     } else {
       this.state.config.botName = "YASHI HALLS MINI";
-      this.state.quotas.mediaQuotaMax = 150;
-      this.state.quotas.aiQuotaMax = 150;
+      this.state.quotas.mediaQuotaMax = 50;
+      this.state.quotas.aiQuotaMax = 100;
       this.state.quotas.maxBotSlots = 1;
-      this.state.config.antiLink = true;
-      this.state.config.antiSpam = true;
-      this.addLog("INFO", "🟢 Tier switched to YASHI HALLS MINI. Quotas set to 150 Daily Requests with all Pro & Business features unlocked!");
+      this.state.config.antiLink = false;
+      this.state.config.antiSpam = false;
+      this.addLog("INFO", "🟢 Tier set to YASHI HALLS MINI (Free). Quotas set to 50 Media / 100 AI daily requests.");
+    }
+    if (persist) {
+      this.saveConfigToFile();
     }
     return this.getState();
   }
@@ -1533,7 +1646,11 @@ Type ".menu" to explore our services.
       const bizPrefix = (prefix || ".").toLowerCase();
       const isPanalMenuCmd =
         lowerBiz === `${bizPrefix}panal` ||
-        lowerBiz === ".panal";
+        lowerBiz === ".panal" ||
+        lowerBiz === `${bizPrefix}panel` ||
+        lowerBiz === ".panel" ||
+        lowerBiz === `${bizPrefix}guild` ||
+        lowerBiz === ".guild";
       const isPayApkCmd =
         lowerBiz === `${bizPrefix}payapk` ||
         lowerBiz === ".payapk" ||
@@ -1557,8 +1674,24 @@ Type ".menu" to explore our services.
           const slug = sanitizePanelCommandSlug(prod.command, prod.name);
           return lowerBiz === `${bizPrefix}${slug}` || lowerBiz === `.${slug}`;
         });
+      const isAdminApprovalAction =
+        rawExtractedText.startsWith("yh_admin_") ||
+        /^(confirm|reject)\s+yh-\d+/i.test(rawExtractedText.trim());
+      const isBankCardCmd =
+        lowerBiz === `${bizPrefix}bank` ||
+        lowerBiz === ".bank" ||
+        lowerBiz === "bank details" ||
+        rawExtractedText === "guild_bank_card";
+      const isGuildDetailsPaste =
+        /Region(?:\s*ID)?\s*[:=-]\s*[a-zA-Z0-9 _()-]{2,32}/i.test(rawExtractedText) &&
+        /(?:Guild|Clan)\s*ID\s*[:=-]\s*\d{5,18}/i.test(rawExtractedText);
       const isBizActionId =
         rawExtractedText.startsWith("biz_") ||
+        rawExtractedText.startsWith("guild_") ||
+        rawExtractedText.startsWith("panel_") ||
+        isGuildDetailsPaste ||
+        isAdminApprovalAction ||
+        isBankCardCmd ||
         isPanalMenuCmd ||
         isPayApkCmd ||
         isPayKeyCmd ||
@@ -7548,20 +7681,385 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
     return `💰 *Price:* ${product.price}`;
   }
 
+  getAutoOrderWhatsAppDispatcher(): AutoOrderWhatsAppDispatcher {
+    return {
+      isOnline: () => Boolean(this.sock && this.state.isOnline),
+      sendMessage: async (targetJid: string, text: string): Promise<boolean> => {
+        if (!this.sock || !this.state.isOnline || !targetJid) return false;
+        try {
+          const sent = await this.sock.sendMessage(targetJid, { text });
+          this.trackSentMessageId(sent);
+          return true;
+        } catch (err: any) {
+          this.addLog("WARN", `⚠️ [AUTO ORDER WA] Failed to send message to ${targetJid.split("@")[0]}: ${err?.message || err}`);
+          return false;
+        }
+      },
+      sendInteractiveCard: async (targetJid: string, opts: {
+        image?: Buffer | null;
+        title?: string;
+        text: string;
+        footer?: string;
+        buttons: Array<{ id: string; text: string }>;
+        urls?: Array<{ displayText: string; url: string }>;
+      }): Promise<boolean> => {
+        if (!this.sock || !this.state.isOnline || !targetJid) return false;
+        try {
+          await this.sendBusinessButtonMessage(targetJid, null, opts);
+          return true;
+        } catch (err: any) {
+          this.addLog("WARN", `⚠️ [AUTO ORDER CARD] Failed to send interactive card to ${targetJid.split("@")[0]}: ${err?.message || err}`);
+          return false;
+        }
+      },
+      sendHtmlAppCard: async (targetJid: string, htmlMarkup: string, opts: { title: string; height: number }): Promise<string | null> => {
+        if (!this.sock || !this.state.isOnline || !targetJid) return null;
+        try {
+          const res = await sendHtmlApp(this.sock, targetJid, htmlMarkup, {
+            title: opts.title,
+            height: opts.height,
+          });
+          if (res?.messageId) {
+            this.trackSentMessageId({ key: { id: res.messageId } });
+            return res.messageId;
+          }
+          return null;
+        } catch (err: any) {
+          this.addLog("WARN", `⚠️ [AUTO ORDER HTML CARD] Failed to send HTML App card: ${err?.message || err}`);
+          return null;
+        }
+      },
+      editHtmlAppCard: async (targetJid: string, messageId: string, htmlMarkup: string, opts: { title: string; height: number }): Promise<boolean> => {
+        if (!this.sock || !this.state.isOnline || !targetJid || !messageId) return false;
+        try {
+          return await editHtmlApp(this.sock, targetJid, messageId, htmlMarkup, {
+            title: opts.title,
+            height: opts.height,
+          });
+        } catch (err: any) {
+          this.addLog("WARN", `⚠️ [AUTO ORDER HTML CARD] Failed to edit HTML App card: ${err?.message || err}`);
+          return false;
+        }
+      },
+      getConnectedBotJid: (): string | null => {
+        const connectedDigits = (
+          this.sock?.user?.id?.split(":")?.[0]?.split("@")?.[0] ||
+          this.state.pairedNumber ||
+          this.state.config.ownerNumber ||
+          ""
+        ).replace(/\D/g, "");
+        return connectedDigits.length >= 8 ? `${connectedDigits}@s.whatsapp.net` : null;
+      },
+      getOwnerJid: (): string | null => {
+        const ownerDigits = (
+          this.state.pairedNumber ||
+          this.sock?.user?.id?.split(":")?.[0]?.split("@")?.[0] ||
+          this.state.config.ownerNumber ||
+          ""
+        ).replace(/\D/g, "");
+        return ownerDigits.length >= 8 ? `${ownerDigits}@s.whatsapp.net` : null;
+      },
+      getStoreName: (): string => {
+        try {
+          return getBusinessStore(this.userId).storeName || this.state.config.botName || "YASHI HALLS";
+        } catch {
+          return "YASHI HALLS";
+        }
+      },
+    };
+  }
+
+  /** PHASE 1 — Welcome Card with GUILD SERVICE & PANEL SERVICE Native Buttons */
+  async sendGuildWelcomeCard(jid: string, msg: any, brandName = "YASHI HALLS") {
+    this.markBusinessCustomerWelcomed(jid, msg);
+    let imgBuf: Buffer | null = null;
+    try {
+      imgBuf = await renderWelcomeCardPng(brandName);
+    } catch {
+      imgBuf = null;
+    }
+    this.businessChatState.set(jid, { step: "welcome", updatedAt: Date.now() });
+    await this.sendBusinessButtonMessage(jid, msg, {
+      image: imgBuf,
+      title: `WELCOME TO ${brandName.toUpperCase()}`,
+      text: [
+        `Welcome to *${brandName}*!`,
+        `What service would you like today?`,
+        ``,
+        `1️⃣ *GUILD SERVICE* — Automated Free Fire Glory Bots (4 / 8 / 12 / 16 Bots)`,
+        `2️⃣ *PANEL SERVICE* — Browse Verified Panels & Keys`,
+      ].join("\n"),
+      footer: `${brandName} • Interactive Order System`,
+      buttons: [
+        { id: "guild_svc_start", text: "⚔️ GUILD SERVICE" },
+        { id: "panel_svc_start", text: "🖥️ PANEL SERVICE" },
+      ],
+    });
+  }
+
+  /** PHASE 2 — Bot Quantity Selection Card (4 / 8 / 12 / 16 BOTS) */
+  async sendGuildQuantityMenu(jid: string, msg: any, brandName = "YASHI HALLS") {
+    const aoState = getAutoOrderState(this.userId);
+    const pricing = aoState.settings.guildPricing;
+    let imgBuf: Buffer | null = null;
+    try {
+      imgBuf = await renderQuantityCardPng(brandName, pricing);
+    } catch {
+      imgBuf = null;
+    }
+    this.businessChatState.set(jid, { step: "guild_qty", updatedAt: Date.now() });
+    await this.sendBusinessButtonMessage(jid, msg, {
+      image: imgBuf,
+      title: "HOW MANY GLORY BOTS DO YOU NEED?",
+      text: [
+        `🤖 *How many Glory Bots do you need?*`,
+        ``,
+        `• *4 BOTS* — LKR ${pricing.bots4.toLocaleString("en-US")}`,
+        `• *8 BOTS* — LKR ${pricing.bots8.toLocaleString("en-US")}`,
+        `• *12 BOTS* — LKR ${pricing.bots12.toLocaleString("en-US")}`,
+        `• *16 BOTS* — LKR ${pricing.bots16.toLocaleString("en-US")}`,
+        ``,
+        `👇 Tap a button below (or reply *4*, *8*, *12*, or *16*) to generate your Payment Card.`,
+      ].join("\n"),
+      footer: `${brandName} • Guild Service Pricing`,
+      buttons: [
+        { id: "guild_qty:4", text: `4 BOTS · LKR ${pricing.bots4}` },
+        { id: "guild_qty:8", text: `8 BOTS · LKR ${pricing.bots8}` },
+        { id: "guild_qty:12", text: `12 BOTS · LKR ${pricing.bots12}` },
+        { id: "guild_qty:16", text: `16 BOTS · LKR ${pricing.bots16}` },
+      ],
+    });
+  }
+
+  /** Sends the Interactive HTML App Bank & eZ Cash Details UI Card with Embedded Banner Photo */
+  async sendBankDetailsHtmlAppCard(
+    jid: string,
+    msg: any,
+    brandName = "YASHI HALLS",
+    orderInfo?: { orderId: string; serviceLabel: string; packageLabel: string; amountLkr: number }
+  ): Promise<boolean> {
+    const aoState = getAutoOrderState(this.userId);
+    const acc = aoState.settings.paymentAccount;
+    const bankName =
+      acc.bankName && acc.bankName !== "Commercial Bank / Sampath Bank"
+        ? acc.bankName
+        : "NSB (National Savings Bank)";
+    const accountName =
+      acc.accountName && acc.accountName !== "YASHI HALLS"
+        ? acc.accountName
+        : "A.M.Y.N Alahakoon";
+    const accountNumber =
+      acc.accountNumber && acc.accountNumber !== "Configure in Admin Dashboard"
+        ? acc.accountNumber
+        : "100156103618";
+    const ezMatch = String(acc.branchName || "").match(/0\d{2}[\s-]?\d{3}[\s-]?\d{4}/);
+    const ezCashNumber = ezMatch ? ezMatch[0].replace(/\D/g, "") : "0743865934";
+    const instructions =
+      acc.instructions ||
+      "NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත මුදල ගෙවා Payment Receipt (Photo / PDF) එක මෙතනට එවන්න.";
+
+    const bannerDataUri = await getEmbeddedBankBannerDataUri();
+    const cardHeight = orderInfo ? 620 : 540;
+    const htmlMarkup = generatePaymentBankDetailsHtml({
+      brandName,
+      orderId: orderInfo?.orderId,
+      serviceLabel: orderInfo?.serviceLabel,
+      packageLabel: orderInfo?.packageLabel,
+      amountLkr: orderInfo?.amountLkr,
+      bankName,
+      accountName,
+      accountNumber,
+      ezCashNumber,
+      instructions,
+      bannerDataUri,
+      height: cardHeight,
+    });
+
+    try {
+      const res = await sendHtmlApp(this.sock, jid, htmlMarkup, {
+        title: orderInfo ? `🏦 PAYMENT • ${orderInfo.orderId}` : `🏦 ${brandName.toUpperCase()} BANK DETAILS`,
+        height: cardHeight,
+        quoted: msg || undefined,
+      });
+      if (res?.messageId) {
+        this.trackSentMessageId({ key: { id: res.messageId } });
+      }
+      return Boolean(res?.success);
+    } catch (err: any) {
+      this.addLog("WARN", `⚠️ [BANK UI CARD] HTML App card fallback: ${err?.message || err}`);
+      return false;
+    }
+  }
+
+  /** PHASE 3 — Premium HTML App Bank Details UI Card + Quick Action Buttons + Pending Order Creation */
+  async sendGuildPaymentCard(jid: string, msg: any, qty: GuildBotQuantity, brandName = "YASHI HALLS") {
+    const senderTag = (msg?.key?.remoteJidAlt || msg?.key?.participantAlt || msg?.key?.participant || jid)
+      .split("@")[0]
+      .split(":")[0];
+    const customerName = String(msg?.pushName || senderTag || "Customer").trim();
+
+    const order = createGuildServiceOrder(this.userId, {
+      customerJid: jid,
+      customerNumber: senderTag,
+      customerName,
+      botQuantity: qty,
+    });
+
+    // Also register in BusinessPay tracker when enabled so existing Android Pay App matches seamlessly
+    const payState = getBusinessPayState(this.userId);
+    if (payState.config.enabled) {
+      createBusinessPayOrder(this.userId, {
+        customerJid: jid,
+        customerNumber: senderTag,
+        productId: order.productId,
+        productName: order.productName,
+        packageDays: `${qty} Glory Bots`,
+        priceDisplay: order.priceDisplay,
+        amountLkr: order.amountLkr,
+      });
+    }
+
+    const aoState = getAutoOrderState(this.userId);
+    const acc = aoState.settings.paymentAccount;
+    const bankName =
+      acc.bankName && acc.bankName !== "Commercial Bank / Sampath Bank"
+        ? acc.bankName
+        : "NSB (National Savings Bank)";
+    const accountName =
+      acc.accountName && acc.accountName !== "YASHI HALLS"
+        ? acc.accountName
+        : "A.M.Y.N Alahakoon";
+    const accountNumber =
+      acc.accountNumber && acc.accountNumber !== "Configure in Admin Dashboard"
+        ? acc.accountNumber
+        : "100156103618";
+    const ezBranch = acc.branchName || "eZ Cash: 074 386 5934";
+    const instructions =
+      acc.instructions ||
+      "NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත මුදල ගෙවා Payment Receipt (Photo / PDF) එක මෙතනට එවන්න.";
+
+    this.businessChatState.set(jid, {
+      step: "guild_awaiting_receipt",
+      orderId: order.id,
+      updatedAt: Date.now(),
+    });
+
+    this.addLog("CMD", `⚔️ [GUILD ORDER] ${senderTag} created ${order.id} (${qty} BOTS • LKR ${order.amountLkr})`);
+
+    // 1. Send the Interactive In-Chat HTML App Bank Details & Payment UI Card (with embedded Bank/eZ Cash Photo & 1-Tap Copy!)
+    const htmlSent = await this.sendBankDetailsHtmlAppCard(jid, msg, brandName, {
+      orderId: order.id,
+      serviceLabel: "GUILD SERVICE",
+      packageLabel: `${qty} BOTS`,
+      amountLkr: order.amountLkr,
+    });
+
+    // 2. Send compact interactive quick buttons (or full fallback PNG card if HTML App failed)
+    if (htmlSent) {
+      await this.sendBusinessButtonMessage(jid, null, {
+        title: `ORDER ${order.id} • READY FOR RECEIPT`,
+        text: [
+          `📤 *ගෙවීම සිදු කළ පසු ඔබගේ Payment Receipt (Photo හෝ PDF) එක මෙම Chat එකට එවන්න.*`,
+          `🧾 *Order ID:* \`${order.id}\`  |  💰 *Amount:* LKR ${order.amountLkr.toLocaleString("en-US")}`,
+        ].join("\n"),
+        footer: `${brandName} • Automated Receipt & Approval System`,
+        buttons: [
+          { id: "guild_svc_start", text: "🔄 Change Quantity" },
+          { id: "guild_bank_card", text: "🏦 Bank Details Card" },
+          { id: "guild_welcome_menu", text: "🏠 Main Menu" },
+        ],
+      });
+      return;
+    }
+
+    let cardPng: Buffer | null = null;
+    try {
+      cardPng = await renderPaymentCardPng({
+        brandName,
+        orderId: order.id,
+        serviceLabel: "GUILD SERVICE",
+        botQuantity: qty,
+        amountLkr: order.amountLkr,
+        bankName,
+        accountName,
+        accountNumber,
+        branchName: ezBranch,
+        instructions,
+      });
+    } catch {
+      cardPng = null;
+    }
+
+    const paymentBody = [
+      `🧾 *Order ID:* ${order.id}`,
+      `⚔️ *Selected Service:* GUILD SERVICE`,
+      `🤖 *Selected Bot Quantity:* ${qty} BOTS`,
+      `💰 *Total Price:* LKR ${order.amountLkr.toLocaleString("en-US")}`,
+      ``,
+      `🏦 *Bank Name:* ${bankName}`,
+      `👤 *Account Name:* ${accountName}`,
+      `💳 *Account Number:* \`${accountNumber}\``,
+      `📱 *eZ Cash:* \`074 386 5934\``,
+      `🔖 *Bank Remark:* \`${order.id}\``,
+      ``,
+      `📤 *ගෙවීම සිදු කර Payment Receipt (Image / PDF) එක මෙතනට එවන්න.*`,
+    ].join("\n");
+
+    await this.sendBusinessButtonMessage(jid, msg, {
+      image: cardPng,
+      title: `💳 PAYMENT CARD • ${order.id}`,
+      text: paymentBody,
+      footer: `${brandName} • Automated Receipt & Approval System`,
+      buttons: [
+        { id: "guild_svc_start", text: "🔄 Change Quantity" },
+        { id: "guild_welcome_menu", text: "🏠 Main Menu" },
+      ],
+    });
+  }
+
   async sendBusinessOrderDetails(
     jid: string,
     msg: any,
     product: BusinessProduct,
     store: BusinessStoreData,
     ownerDigits: string,
-    selectedPkg?: BusinessPricePackage | null
+    selectedPkg?: BusinessPricePackage | null,
+    clanIdOverride?: string
   ) {
-    const imgBuf = await this.resolveBusinessImageBuffer(product.logoUrl, store.mainLogoUrl);
     const chosenDays = selectedPkg?.days || "";
     const chosenPrice = selectedPkg?.price || product.price;
     const senderTag = (msg?.key?.remoteJidAlt || msg?.key?.participantAlt || msg?.key?.participant || jid).split("@")[0].split(":")[0];
+    const customerName = String(msg?.pushName || senderTag || "Customer").trim();
 
+    // Check if product/package is mapped to FFGlory Clan Group and needs Clan ID first
+    const ffMapping = findProductMapping(this.userId, product.id, selectedPkg?.id);
+    if (ffMapping && ffMapping.enabled && ffMapping.actionType === "CLAN_GROUP" && !clanIdOverride) {
+      this.businessChatState.set(jid, {
+        step: "awaiting_clan_id",
+        productId: product.id,
+        packageId: selectedPkg?.id,
+        updatedAt: Date.now(),
+      });
+      const askClanText = [
+        `🔥 *${product.name}*${chosenDays ? ` (${chosenDays})` : ""}`,
+        `🌍 *Server Region:* ${(ffMapping.region || "BD").toUpperCase()}`,
+        `💰 *Price:* ${chosenPrice}`,
+        ``,
+        `👉 ඔබගේ *Free Fire Clan / Guild ID* එක මෙතනට Reply කරන්න (උදා: \`123456789\`).`,
+        `❌ අවලංගු කිරීමට *cancel* යවන්න.`,
+      ].join("\n");
+      const sentPrompt = await this.sock.sendMessage(jid, { text: askClanText }, msg ? { quoted: msg } : undefined).catch(() => null);
+      this.trackSentMessageId(sentPrompt);
+      return;
+    }
+
+    const imgBuf = await this.resolveBusinessImageBuffer(product.logoUrl, store.mainLogoUrl);
     const payState = getBusinessPayState(this.userId);
+    const computedAmountLkr =
+      ffMapping?.priceLkrOverride && ffMapping.priceLkrOverride > 0
+        ? ffMapping.priceLkrOverride
+        : estimateAmountLkr(chosenPrice, payState.config.lkrPerUsdRate);
+
     let trackedOrder: BusinessPayOrder | null = null;
     if (payState.config.enabled) {
       trackedOrder = createBusinessPayOrder(this.userId, {
@@ -7571,25 +8069,48 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
         productName: product.name,
         packageDays: chosenDays,
         priceDisplay: chosenPrice,
+        amountLkr: computedAmountLkr > 0 ? computedAmountLkr : undefined,
       });
     }
 
+    // Persist synchronized Auto Order record (PENDING_PAYMENT)
+    const autoOrder = createAutoOrder(this.userId, {
+      orderId: trackedOrder?.id,
+      customerJid: jid,
+      customerNumber: senderTag,
+      customerName,
+      productId: product.id,
+      productName: product.name,
+      packageId: selectedPkg?.id,
+      packageDays: chosenDays,
+      priceDisplay: chosenPrice,
+      amountLkr: trackedOrder?.amountLkr || computedAmountLkr,
+      clanId: clanIdOverride,
+    });
+
     this.addLog(
       "CMD",
-      `🛒 [BIZ ORDER] ${senderTag} selected "${product.name}"${chosenDays ? ` (${chosenDays} • ${chosenPrice})` : ` (${chosenPrice})`}${trackedOrder ? ` [${trackedOrder.id}]` : ""}`
+      `🛒 [BIZ ORDER] ${senderTag} selected "${product.name}"${chosenDays ? ` (${chosenDays} • ${chosenPrice})` : ` (${chosenPrice})`} [${autoOrder.id} | ${autoOrder.deliveryAction}]`
     );
 
+    const finalAmountLkr = autoOrder.amountLkr || trackedOrder?.amountLkr || 0;
     const orderText = [
-      trackedOrder ? `🧾 *Order ID:* ${trackedOrder.id}` : "",
+      `🧾 *Order ID:* ${autoOrder.id}`,
       `✅ *Product:* ${product.name}`,
       `📂 *Category:* ${product.category}`,
       `📱 *Platform:* ${this.formatBusinessPlatformLabel(product.platform)}`,
       chosenDays ? `📅 *Duration (Days):* ${chosenDays}` : "",
-      `💰 *Price:* ${chosenPrice}${trackedOrder && trackedOrder.amountLkr > 0 ? ` (LKR ${trackedOrder.amountLkr.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })})` : ""}`,
-      `📦 *Status:* 🟢 IN STOCK`,
+      clanIdOverride ? `🛡️ *Clan ID:* ${clanIdOverride}` : "",
+      ffMapping?.actionType === "CLAN_GROUP" && ffMapping.region ? `🌍 *Region:* ${ffMapping.region.toUpperCase()}` : "",
+      `💰 *Price:* ${chosenPrice}${finalAmountLkr > 0 ? ` (LKR ${finalAmountLkr.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })})` : ""}`,
+      `📦 *Status:* 🟡 PENDING PAYMENT`,
+      ffMapping && ffMapping.enabled && ffMapping.actionType !== "MANUAL"
+        ? `⚡ *Auto Delivery:* Bank Payment තහවුරු වූ වහාම ස්වයංක්‍රීයව ලබා දෙනු ඇත.`
+        : "",
       ``,
       `📝 ${store.orderInstructions}`,
       payState.config.enabled && payState.config.bankDetailsText ? `💳 ${payState.config.bankDetailsText}` : "",
+      `🔖 _Bank Remark/Reference එකට *${autoOrder.id}* සඳහන් කර නිවැරදි මුදල ගෙවන්න._`,
       ownerDigits ? `📞 *WhatsApp:* https://wa.me/${ownerDigits}` : "",
     ]
       .filter(Boolean)
@@ -7601,6 +8122,7 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
       text: orderText,
       footer: `${store.storeName} • Thank You!`,
       buttons: [
+        { id: "guild_bank_card", text: "🏦 Bank Details" },
         { id: "biz_all_ui_menu", text: "📋 All Panels (.panal)" },
       ],
       urls: ownerDigits
@@ -8135,6 +8657,185 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
       const ownerDigits = (this.state.config.ownerNumber || "94740712934").replace(/\D/g, "");
       const chatState = this.businessChatState.get(jid);
       const chatStep = chatState?.step;
+      const brandName = store.storeName || this.state.config.botName || "YASHI HALLS";
+      const aoSettings = getAutoOrderState(this.userId).settings;
+
+      // 00-RECEIPT. DETECT CUSTOMER PAYMENT RECEIPT UPLOAD (IMAGE / PDF / DOCUMENT) EVEN WITH EMPTY CAPTION
+      const rawMsgObj = msg?.message || {};
+      const imgMsg = rawMsgObj.imageMessage;
+      const docMsg =
+        rawMsgObj.documentMessage ||
+        rawMsgObj.documentWithCaptionMessage?.message?.documentMessage;
+      const hasReceiptMedia = Boolean(imgMsg || docMsg);
+
+      if (hasReceiptMedia && !isGroup) {
+        const pendingOrder = getActiveCustomerPendingOrder(this.userId, jid);
+        if (pendingOrder) {
+          const mimeType = String(
+            imgMsg?.mimetype || docMsg?.mimetype || "image/jpeg"
+          ).toLowerCase();
+          const isSupportedReceiptMime =
+            mimeType.startsWith("image/") || mimeType === "application/pdf";
+
+          if (!isSupportedReceiptMime) {
+            await this.sock
+              .sendMessage(
+                jid,
+                {
+                  text: `⚠️ Unsupported receipt file type (${mimeType}). Please upload your payment receipt as an *Image (JPG/PNG)* or *PDF Document*.`,
+                },
+                msg ? { quoted: msg } : undefined
+              )
+              .catch(() => {});
+            return;
+          }
+
+          // 1. Send Animated Cyber/Neon Payment Processing HTML App Card immediately!
+          let procCardMsgId: string | null = null;
+          const pkgLabel = pendingOrder.botQuantity
+            ? `${pendingOrder.botQuantity} BOTS`
+            : pendingOrder.packageDays || pendingOrder.productName;
+          try {
+            const scanningHtml = generatePaymentProcessingHtml({
+              brandName,
+              orderId: pendingOrder.id,
+              stage: "SCANNING",
+              packageLabel: pkgLabel,
+              expectedAmountLkr: pendingOrder.amountLkr,
+              headline: "Scanning Payment Receipt...",
+              subline: "AI Receipt Scanner & Bank Verification Engine මඟින් ඔබගේ Receipt එක පරීක්ෂා කරමින් පවතී...",
+              height: 315,
+            });
+            const cardRes = await sendHtmlApp(this.sock, jid, scanningHtml, {
+              title: `🔍 PROCESSING • ${pendingOrder.id}`,
+              height: 315,
+              quoted: msg || undefined,
+            });
+            if (cardRes?.messageId) {
+              procCardMsgId = cardRes.messageId;
+              this.trackSentMessageId({ key: { id: cardRes.messageId } });
+            }
+          } catch {
+            procCardMsgId = null;
+          }
+
+          if (!procCardMsgId) {
+            await this.sock
+              .sendMessage(
+                jid,
+                {
+                  text: `🔍 *Scanning your payment receipt for Order ${pendingOrder.id}...*\nPlease wait a few seconds while we verify your payment.`,
+                },
+                msg ? { quoted: msg } : undefined
+              )
+              .catch(() => {});
+          }
+
+          try {
+            const mediaBuf = (await downloadMediaMessage(
+              msg,
+              "buffer",
+              {},
+              { logger: pino({ level: "silent" }), reuploadRequest: this.sock.updateMediaMessage }
+            )) as Buffer;
+
+            if (Buffer.isBuffer(mediaBuf) && mediaBuf.length > 0) {
+              const fileName =
+                String(docMsg?.fileName || "").trim() ||
+                `receipt_${pendingOrder.id}.${mimeType.includes("pdf") ? "pdf" : "jpg"}`;
+              const verification = await processCustomerReceiptUpload(
+                this.userId,
+                {
+                  orderId: pendingOrder.id,
+                  fileBuffer: mediaBuf,
+                  fileName,
+                  mimeType,
+                },
+                this.getAutoOrderWhatsAppDispatcher()
+              );
+
+              const ocr = verification.order?.receipt?.ocrData;
+              const isVerified = verification.status === "VERIFIED";
+              const isRejected =
+                verification.status === "REJECTED_AMOUNT_MISMATCH" ||
+                verification.status === "REJECTED_DUPLICATE_HASH" ||
+                verification.status === "REJECTED_DUPLICATE_REF";
+
+              if (procCardMsgId) {
+                const updatedHtml = generatePaymentProcessingHtml({
+                  brandName,
+                  orderId: pendingOrder.id,
+                  stage: isVerified ? "VERIFIED" : isRejected ? "REJECTED" : "AWAITING_APPROVAL",
+                  packageLabel: pkgLabel,
+                  expectedAmountLkr: pendingOrder.amountLkr,
+                  detectedAmountLkr: ocr?.amountLkr || null,
+                  bankName: ocr?.bankName || null,
+                  reference: ocr?.transactionRefId || null,
+                  headline: isVerified
+                    ? "Payment Verified Successfully!"
+                    : verification.status === "REJECTED_AMOUNT_MISMATCH"
+                      ? "Amount Mismatch Detected"
+                      : isRejected
+                        ? "Duplicate Receipt Rejected"
+                        : "Receipt Received — Verifying Payment",
+                  subline: isVerified
+                    ? "ඔබගේ ගෙවීම තහවුරු විය! පහත Guild Configuration කාඩ්පතින් ඔබේ විස්තර එවන්න."
+                    : verification.status === "REJECTED_AMOUNT_MISMATCH"
+                      ? `අවශ්‍ය මුදල LKR ${pendingOrder.amountLkr} නමුත් Receipt එකේ LKR ${ocr?.amountLkr || "?"} ලෙස සඳහන් වේ. නිවැරදි Receipt එකක් එවන්න.`
+                      : isRejected
+                        ? "මෙම Receipt එක කලින් භාවිතා කර ඇත. නව ගෙවීමක සත්‍ය Receipt එකක් Upload කරන්න."
+                        : "Bank Notification හෝ Admin Approval ලැබුණු වහාම ඔබේ ඕඩර් එක ස්වයංක්‍රීයව ඉදිරියට යයි.",
+                  height: 315,
+                });
+                await editHtmlApp(this.sock, jid, procCardMsgId, updatedHtml, {
+                  title: isVerified
+                    ? `✅ VERIFIED • ${pendingOrder.id}`
+                    : isRejected
+                      ? `❌ RECEIPT NOTICE • ${pendingOrder.id}`
+                      : `⏳ VERIFYING • ${pendingOrder.id}`,
+                  height: 315,
+                }).catch(() => {});
+              } else if (verification.customerReplyText) {
+                await this.sock
+                  .sendMessage(
+                    jid,
+                    { text: verification.customerReplyText },
+                    msg ? { quoted: msg } : undefined
+                  )
+                  .catch(() => {});
+              }
+              return;
+            }
+          } catch (dlErr: any) {
+            this.addLog("WARN", `⚠️ [RECEIPT UPLOAD] Download error for ${pendingOrder.id}: ${dlErr?.message || dlErr}`);
+            if (procCardMsgId) {
+              const errHtml = generatePaymentProcessingHtml({
+                brandName,
+                orderId: pendingOrder.id,
+                stage: "REJECTED",
+                packageLabel: pkgLabel,
+                expectedAmountLkr: pendingOrder.amountLkr,
+                headline: "Could Not Read Receipt File",
+                subline: "කරුණාකර ඔබගේ Payment Receipt Photo හෝ PDF එක නැහැදිලි බැවින් නැවත පැහැදිලිව එවන්න.",
+                height: 315,
+              });
+              await editHtmlApp(this.sock, jid, procCardMsgId, errHtml, {
+                title: `⚠️ UPLOAD RETRY • ${pendingOrder.id}`,
+                height: 315,
+              }).catch(() => {});
+            } else {
+              await this.sock
+                .sendMessage(
+                  jid,
+                  { text: "⚠️ Could not download your receipt file. Please re-send your payment receipt Image or PDF." },
+                  msg ? { quoted: msg } : undefined
+                )
+                .catch(() => {});
+            }
+            return;
+          }
+        }
+      }
 
       if (!trimmed) return;
 
@@ -8167,14 +8868,360 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
         return;
       }
 
-      // 0A. HTML UI CARD MENU — ONLY triggered by `.panal` (or `biz_all_ui_menu` button)
-      const isPanalMenuTrigger =
-        trimmed === "biz_all_ui_menu" ||
-        lower === `${prefix.toLowerCase()}panal` ||
-        lower === ".panal";
+      // 00-APPROVAL. OWNER PAYMENT CONFIRM / REJECT BUTTONS & COMMANDS (CONNECTED BOT NUMBER)
+      const adminConfirmMatch =
+        trimmed.match(/^yh_admin_confirm:(YH-\d{3,10})$/i) ||
+        trimmed.match(/^confirm\s+(YH-\d{3,10})$/i);
+      if (adminConfirmMatch) {
+        if (!isOwner && !msg.key.fromMe) {
+          await this.sock.sendMessage(jid, { text: "🔒 Payment Confirm කිරීමට Owner අවසරය අවශ්‍ය වේ." }, msg ? { quoted: msg } : undefined).catch(() => {});
+          return;
+        }
+        const targetOrderId = adminConfirmMatch[1].toUpperCase();
+        const dispatcher = this.getAutoOrderWhatsAppDispatcher();
+        const approveRes = await adminApproveOrderPayment(
+          this.userId,
+          targetOrderId,
+          "whatsapp_owner_button",
+          dispatcher
+        );
+        if (approveRes.success && approveRes.order) {
+          if (approveRes.order.customerJid && approveRes.order.serviceType !== "GUILD_SERVICE") {
+            const verifiedHtml = generatePaymentProcessingHtml({
+              brandName,
+              orderId: approveRes.order.id,
+              stage: "VERIFIED",
+              packageLabel: approveRes.order.productName,
+              expectedAmountLkr: approveRes.order.amountLkr,
+              detectedAmountLkr: approveRes.order.amountLkr,
+              bankName: approveRes.order.payment?.bank || "Admin Verified",
+              headline: "Payment Confirmed by Admin!",
+              subline: "ඔබගේ ගෙවීම සාර්ථකව තහවුරු විය!",
+              height: 315,
+            });
+            await dispatcher.sendHtmlAppCard?.(approveRes.order.customerJid, verifiedHtml, {
+              title: `✅ PAYMENT CONFIRMED • ${approveRes.order.id}`,
+              height: 315,
+            });
+          }
+          await this.sock
+            .sendMessage(
+              jid,
+              {
+                text: `✅ *PAYMENT CONFIRMED!*\n🧾 *Order ID:* ${targetOrderId}\n👤 *Customer:* ${approveRes.order.customerName} (+${approveRes.order.customerNumber})\n💰 *Amount:* LKR ${approveRes.order.amountLkr.toLocaleString("en-US")}\n🚀 ${approveRes.message}`,
+              },
+              msg ? { quoted: msg } : undefined
+            )
+            .catch(() => {});
+        } else {
+          await this.sock
+            .sendMessage(
+              jid,
+              { text: `⚠️ *Confirm Notice (${targetOrderId}):* ${approveRes.message}` },
+              msg ? { quoted: msg } : undefined
+            )
+            .catch(() => {});
+        }
+        return;
+      }
 
-      if (isPanalMenuTrigger) {
-        this.addLog("CMD", `💼 [BUSINESS BOT] .panal UI Menu requested by ${senderNumber}`);
+      const adminRejectMatch =
+        trimmed.match(/^yh_admin_reject:(YH-\d{3,10})$/i) ||
+        trimmed.match(/^reject\s+(YH-\d{3,10})$/i);
+      if (adminRejectMatch) {
+        if (!isOwner && !msg.key.fromMe) {
+          await this.sock.sendMessage(jid, { text: "🔒 Payment Reject කිරීමට Owner අවසරය අවශ්‍ය වේ." }, msg ? { quoted: msg } : undefined).catch(() => {});
+          return;
+        }
+        const targetOrderId = adminRejectMatch[1].toUpperCase();
+        const rejectRes = adminRejectOrCancelOrder(
+          this.userId,
+          targetOrderId,
+          "whatsapp_owner_button",
+          "REJECT",
+          "Payment rejected by Admin via WhatsApp"
+        );
+        if (rejectRes.success && rejectRes.order) {
+          const dispatcher = this.getAutoOrderWhatsAppDispatcher();
+          if (rejectRes.order.customerJid) {
+            const rejectedHtml = generatePaymentProcessingHtml({
+              brandName,
+              orderId: rejectRes.order.id,
+              stage: "REJECTED",
+              packageLabel: rejectRes.order.botQuantity
+                ? `${rejectRes.order.botQuantity} BOTS`
+                : rejectRes.order.productName,
+              expectedAmountLkr: rejectRes.order.amountLkr,
+              headline: "Payment Receipt Rejected",
+              subline: "ඔබගේ Payment Receipt එක තහවුරු කළ නොහැකි විය. නිවැරදි ගෙවීමක් සිදු කර නව Order එකක් ආරම්භ කරන්න.",
+              height: 315,
+            });
+            const sentCard = await dispatcher.sendHtmlAppCard?.(rejectRes.order.customerJid, rejectedHtml, {
+              title: `❌ PAYMENT REJECTED • ${rejectRes.order.id}`,
+              height: 315,
+            });
+            if (!sentCard) {
+              await dispatcher.sendMessage(
+                rejectRes.order.customerJid,
+                `❌ *PAYMENT REJECTED*\n🧾 Order: *${rejectRes.order.id}*\nඔබගේ Payment Receipt එක Admin විසින් ප්‍රතික්ෂේප කරන ලදී. ගැටළුවක් ඇත්නම් Admin සම්බන්ධ කරගන්න.`
+              );
+            }
+          }
+          await this.sock
+            .sendMessage(
+              jid,
+              {
+                text: `❌ *PAYMENT REJECTED*\n🧾 *Order ID:* ${targetOrderId}\n👤 *Customer:* ${rejectRes.order.customerName} (+${rejectRes.order.customerNumber})\n📌 Customer වෙත දැනුම් දෙන ලදී.`,
+              },
+              msg ? { quoted: msg } : undefined
+            )
+            .catch(() => {});
+        } else {
+          await this.sock
+            .sendMessage(
+              jid,
+              { text: `⚠️ *Reject Notice (${targetOrderId}):* ${rejectRes.message}` },
+              msg ? { quoted: msg } : undefined
+            )
+            .catch(() => {});
+        }
+        return;
+      }
+
+      // 00-BANK. BANK & EZ CASH DETAILS HTML APP UI CARD
+      if (
+        trimmed === "guild_bank_card" ||
+        lower === `${prefix.toLowerCase()}bank` ||
+        lower === ".bank" ||
+        lower === "bank" ||
+        lower === "bank details"
+      ) {
+        const pendingOrd = getActiveCustomerPendingOrder(this.userId, jid);
+        await this.sendBankDetailsHtmlAppCard(
+          jid,
+          msg,
+          brandName,
+          pendingOrd
+            ? {
+                orderId: pendingOrd.id,
+                serviceLabel: pendingOrd.serviceType === "GUILD_SERVICE" ? "GUILD SERVICE" : "STORE ORDER",
+                packageLabel: pendingOrd.botQuantity ? `${pendingOrd.botQuantity} BOTS` : pendingOrd.productName,
+                amountLkr: pendingOrd.amountLkr,
+              }
+            : undefined
+        );
+        return;
+      }
+
+      // 00-GUILD. INTERACTIVE GUILD ORDER FLOW (PHASES 1, 2, 3, 5, 6, 7, 8)
+      if (aoSettings.guildFlowEnabled) {
+        // Phase 1 Trigger: Welcome Card (button or explicit keywords)
+        if (
+          trimmed === "guild_welcome_menu" ||
+          lower === ".guild" ||
+          lower === `${prefix.toLowerCase()}guild` ||
+          lower === ".start" ||
+          lower === "start" ||
+          lower === "guild service" ||
+          lower === "order"
+        ) {
+          if (lower === "guild service") {
+            await this.sendGuildQuantityMenu(jid, msg, brandName);
+          } else {
+            await this.sendGuildWelcomeCard(jid, msg, brandName);
+          }
+          return;
+        }
+
+        const isRecentWelcomeStep = Boolean(
+          chatStep === "welcome" && chatState && Date.now() - chatState.updatedAt <= 5 * 60 * 1000
+        );
+
+        // Phase 1 Button 1: GUILD SERVICE -> Phase 2 Bot Quantity Menu
+        if (trimmed === "guild_svc_start" || (isRecentWelcomeStep && (trimmed === "1" || lower === "guild" || lower === "guild service"))) {
+          await this.sendGuildQuantityMenu(jid, msg, brandName);
+          return;
+        }
+
+        // Phase 1 Button 2: PANEL SERVICE -> Clean isolated Panel Catalog (.panal)
+        if (trimmed === "panel_svc_start" || (isRecentWelcomeStep && (trimmed === "2" || lower === "panel" || lower === "panal" || lower === "panel service"))) {
+          this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+          await this.sendBusinessCatalogAppMenu(jid, msg, store);
+          return;
+        }
+
+        // Phase 2 Selection: 4 / 8 / 12 / 16 BOTS -> Phase 3 Premium Payment Card
+        if (trimmed.startsWith("guild_qty:")) {
+          const parsedQty = Number(trimmed.slice("guild_qty:".length).trim());
+          const qty: GuildBotQuantity =
+            parsedQty === 8 || parsedQty === 12 || parsedQty === 16 ? parsedQty : 4;
+          await this.sendGuildPaymentCard(jid, msg, qty, brandName);
+          return;
+        }
+
+        if (chatStep === "guild_qty") {
+          const mapQty: Record<string, GuildBotQuantity> = {
+            "1": 4,
+            "4": 4,
+            "4 bots": 4,
+            "2": 8,
+            "8": 8,
+            "8 bots": 8,
+            "3": 12,
+            "12": 12,
+            "12 bots": 12,
+            "4b": 4,
+            "16": 16,
+            "16 bots": 16,
+          };
+          const chosen = mapQty[lower];
+          if (chosen) {
+            await this.sendGuildPaymentCard(jid, msg, chosen, brandName);
+            return;
+          }
+        }
+
+        // Phase 5 Native Region Button Clicked: guild_reg:<orderId>:<regionId>
+        if (trimmed.startsWith("guild_reg:")) {
+          const parts = trimmed.split(":");
+          const orderId = (parts[1] || "").trim();
+          const regionId = (parts[2] || "").trim().toLowerCase();
+          if (orderId && regionId) {
+            this.businessChatState.set(jid, {
+              step: "guild_awaiting_clan_id",
+              orderId,
+              regionId,
+              updatedAt: Date.now(),
+            });
+            await this.sock
+              .sendMessage(
+                jid,
+                {
+                  text: [
+                    `🌍 *Selected Region:* ${regionId.toUpperCase()}`,
+                    `🧾 *Order ID:* ${orderId}`,
+                    ``,
+                    `👉 දැන් ඔබගේ *Free Fire Guild / Clan ID* එක Reply කරන්න (උදා: \`123456789\`).`,
+                    `❌ අවලංගු කිරීමට *cancel* යවන්න.`,
+                  ].join("\n"),
+                },
+                msg ? { quoted: msg } : undefined
+              )
+              .catch(() => {});
+            return;
+          }
+        }
+
+        // Phase 5 In-Chat Guild ID Reply after picking Region button
+        if (chatStep === "guild_awaiting_clan_id" && chatState?.orderId && chatState?.regionId) {
+          if (lower === "cancel" || lower === "stop") {
+            this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+            await this.sock.sendMessage(jid, { text: "❌ Guild configuration paused. You can reopen it anytime." }, msg ? { quoted: msg } : undefined).catch(() => {});
+            return;
+          }
+          const cleanedId = trimmed.replace(/\s+/g, "");
+          if (/^\d{5,18}$/.test(cleanedId)) {
+            this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+            const res = await submitGuildConfiguration(
+              this.userId,
+              chatState.orderId,
+              {
+                regionId: chatState.regionId,
+                clanId: cleanedId,
+                submittedVia: "WHATSAPP_NATIVE",
+                actor: senderNumber,
+              },
+              this.getAutoOrderWhatsAppDispatcher()
+            );
+            if (!res.success) {
+              await this.sock
+                .sendMessage(jid, { text: `⚠️ *Guild Launch Notice:* ${res.message}` }, msg ? { quoted: msg } : undefined)
+                .catch(() => {});
+            }
+            return;
+          } else {
+            await this.sock
+              .sendMessage(
+                jid,
+                { text: "⚠️ කරුණාකර වලංගු *Guild / Clan ID* එකක් (ඉලක්කම් 5–18) පමණක් Reply කරන්න." },
+                msg ? { quoted: msg } : undefined
+              )
+              .catch(() => {});
+            return;
+          }
+        }
+
+        // Phase 5 COPY DETAILS Format Detector (Customer copied from Launch New Group HTML Card & pasted into WhatsApp!)
+        const copyRegionMatch = trimmed.match(/Region(?:\s*ID)?\s*[:=-]\s*([a-zA-Z0-9 _()-]{2,36})/i);
+        const copyGuildMatch = trimmed.match(/(?:Guild|Clan)\s*ID\s*[:=-]\s*(\d{5,18})/i);
+        if (copyRegionMatch && copyGuildMatch) {
+          const explicitOrderMatch = trimmed.match(/\b(YH-\d{3,10})\b/i);
+          const targetOrder =
+            (explicitOrderMatch
+              ? getAutoOrderState(this.userId).orders.find((o) => o.id === explicitOrderMatch[1].toUpperCase())
+              : null) || getActiveCustomerAwaitingGuildConfigOrder(this.userId, jid);
+
+          if (targetOrder) {
+            const rawRegionToken = copyRegionMatch[1].split("(")[0].trim();
+            const res = await submitGuildConfiguration(
+              this.userId,
+              targetOrder.id,
+              {
+                regionId: rawRegionToken,
+                clanId: copyGuildMatch[1].trim(),
+                submittedVia: "WHATSAPP_COPY",
+                actor: senderNumber,
+              },
+              this.getAutoOrderWhatsAppDispatcher()
+            );
+            if (!res.success) {
+              await this.sock
+                .sendMessage(jid, { text: `⚠️ *Guild Configuration Error:* ${res.message}` }, msg ? { quoted: msg } : undefined)
+                .catch(() => {});
+            }
+            return;
+          }
+        }
+
+        // Phase 8 Native Button: LIVE GLORY STATUS REFRESH
+        if (trimmed.startsWith("guild_live_glory:")) {
+          const orderId = trimmed.slice("guild_live_glory:".length).trim();
+          if (orderId) {
+            const res = await sendLiveGloryCardToWhatsApp(
+              this.userId,
+              orderId,
+              this.getAutoOrderWhatsAppDispatcher()
+            );
+            if (!res.success && res.message) {
+              await this.sock
+                .sendMessage(jid, { text: `⚠️ Live Glory Notice: ${res.message}` }, msg ? { quoted: msg } : undefined)
+                .catch(() => {});
+            }
+            return;
+          }
+        }
+      }
+
+      // 0A. SERVICE MENU (.panal / .panel) & ALL PANELS BUTTON (biz_all_ui_menu)
+      const isPanalCommand =
+        lower === `${prefix.toLowerCase()}panal` ||
+        lower === ".panal" ||
+        lower === `${prefix.toLowerCase()}panel` ||
+        lower === ".panel";
+
+      if (isPanalCommand) {
+        this.addLog("CMD", `💼 [BUSINESS BOT] ${trimmed} service menu requested by ${senderNumber}`);
+        if (aoSettings.guildFlowEnabled) {
+          await this.sendGuildWelcomeCard(jid, msg, brandName);
+        } else {
+          this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+          await this.sendBusinessCatalogAppMenu(jid, msg, store);
+        }
+        return;
+      }
+
+      if (trimmed === "biz_all_ui_menu") {
+        this.addLog("CMD", `💼 [BUSINESS BOT] All Panels UI Catalog requested by ${senderNumber}`);
         this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
         await this.sendBusinessCatalogAppMenu(jid, msg, store);
         return;
@@ -8212,6 +9259,34 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
         });
         if (matchedPanelByCmd) {
           await this.sendBusinessPanelDetailsByCommand(jid, msg, matchedPanelByCmd, store);
+          return;
+        }
+      }
+
+      // 0D-CLAN. CLAN ID INPUT STEP FOR FFGLORY CLAN GROUP ORDERS
+      if (chatStep === "awaiting_clan_id" && chatState?.productId && !trimmed.startsWith(prefix) && !trimmed.startsWith(".")) {
+        if (lower === "cancel" || lower === "stop" || lower === "exit") {
+          this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+          await this.sock.sendMessage(jid, { text: "❌ Clan Glory Order එක අවලංගු කරන ලදී. නැවත තෝරාගැනීමට *.panal* යවන්න." }, msg ? { quoted: msg } : undefined).catch(() => {});
+          return;
+        }
+        const cleanedClanId = trimmed.replace(/\s+/g, "");
+        if (/^\d{5,18}$/.test(cleanedClanId)) {
+          const activeProduct = store.products.find((p) => p.id === chatState.productId);
+          if (activeProduct) {
+            const matchedPkg = chatState.packageId
+              ? (activeProduct.packages || []).find((pk) => pk.id === chatState.packageId) || null
+              : activeProduct.packages?.[0] || null;
+            this.businessChatState.set(jid, { step: "catalog", updatedAt: Date.now() });
+            await this.sendBusinessOrderDetails(jid, msg, activeProduct, store, ownerDigits, matchedPkg, cleanedClanId);
+            return;
+          }
+        } else {
+          await this.sock.sendMessage(
+            jid,
+            { text: "⚠️ වලංගු *Free Fire Clan / Guild ID* එකක් (ඉලක්කම් පමණක්, උදා: `123456789`) Reply කරන්න.\n❌ අවලංගු කිරීමට *cancel* යවන්න." },
+            msg ? { quoted: msg } : undefined
+          ).catch(() => {});
           return;
         }
       }
@@ -8287,7 +9362,21 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
         return;
       }
 
-      // All other normal chats/greetings ("Ow", "hy", ".menu", etc.) -> DO NOT send welcome or auto-reply
+      // PHASE 1 WELCOME CARD — STRICTLY ONCE PER CUSTOMER (persisted in welcomed_customers.json)
+      if (!isGroup && aoSettings.guildFlowEnabled && aoSettings.welcomeOnFirstMessage) {
+        const alreadyWelcomed = this.hasReceivedBusinessWelcome(jid, msg);
+        if (!alreadyWelcomed && !trimmed.startsWith(prefix) && !trimmed.startsWith(".")) {
+          this.markBusinessCustomerWelcomed(jid, msg);
+          const awaitingCfg = getActiveCustomerAwaitingGuildConfigOrder(this.userId, jid);
+          if (awaitingCfg) {
+            await sendPhase5GuildConfigCard(this.userId, awaitingCfg, this.getAutoOrderWhatsAppDispatcher());
+            return;
+          }
+          await this.sendGuildWelcomeCard(jid, msg, brandName);
+          return;
+        }
+      }
+
       return;
     } catch (bizErr: any) {
       this.addLog("ERROR", `❌ [BUSINESS BOT] Handler error: ${bizErr?.message || bizErr}`);

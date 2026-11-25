@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { soundFX } from '../utils/sound';
 import { downloadPayApkViaBlob, sendPayApkToWhatsApp } from '../utils/apkDownload';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 interface PayDevice {
   deviceId: string;
@@ -172,7 +173,7 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
   const fetchPayStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/business/pay/status', {
-        headers: { 'x-user-id': businessBotUserId },
+        headers: withAuthHeaders({ 'x-user-id': businessBotUserId }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -222,10 +223,10 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
     try {
       const res = await fetch('/api/business/pay/config', {
         method: 'POST',
-        headers: {
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
           'x-user-id': businessBotUserId,
-        },
+        }),
         body: JSON.stringify({
           userId: businessBotUserId,
           enabled,
@@ -258,10 +259,10 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
     try {
       const res = await fetch('/api/business/pay/rotate-secret', {
         method: 'POST',
-        headers: {
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
           'x-user-id': businessBotUserId,
-        },
+        }),
         body: JSON.stringify({ userId: businessBotUserId }),
       });
       const json = await res.json();
@@ -288,10 +289,10 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
       const amt = Number(testAmount) > 0 ? Number(testAmount) : 1500;
       const res = await fetch('/api/business/pay/test', {
         method: 'POST',
-        headers: {
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
           'x-user-id': businessBotUserId,
-        },
+        }),
         body: JSON.stringify({
           userId: businessBotUserId,
           amountLkr: amt,
@@ -324,10 +325,10 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
     try {
       const res = await fetch(`/api/business/pay/orders/${encodeURIComponent(orderId)}/status`, {
         method: 'POST',
-        headers: {
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
           'x-user-id': businessBotUserId,
-        },
+        }),
         body: JSON.stringify({ userId: businessBotUserId, status }),
       });
       const json = await res.json();

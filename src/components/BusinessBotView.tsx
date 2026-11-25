@@ -41,8 +41,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { ServerBotState, ServerBotLog } from '../types';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 import { normalizeWhatsAppNumber } from '../utils/phone';
 import { BusinessPayPanel } from './BusinessPayPanel';
+import { AutoOrderManagementView } from './AutoOrderManagementView';
 import { downloadPayApkViaBlob, sendPayApkToWhatsApp } from '../utils/apkDownload';
 
 type BusinessPlatform = 'android' | 'ios' | 'pc' | 'android_ios' | 'glory_bot';
@@ -99,21 +101,38 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-export const BusinessBotView: React.FC = () => {
-  const { effectiveUserId, setActiveTab, addToast } = useApp();
+interface BusinessBotViewProps {
+  embedded?: boolean;
+  initialSection?: 'store' | 'connect' | 'pay' | 'auto-orders';
+}
+
+export const BusinessBotView: React.FC<BusinessBotViewProps> = ({
+  embedded = false,
+  initialSection,
+}) => {
+  const { effectiveUserId, setActiveTab, addToast, user, isAdmin, navigateToSubscription } = useApp();
 
   // Completely isolated tenant ID for the separate Business Bot
   const businessBotUserId = `${effectiveUserId}__business`;
 
-  const [sectionTab, setSectionTab] = useState<'store' | 'connect' | 'pay'>(() => {
+  const [sectionTab, setSectionTab] = useState<'store' | 'connect' | 'pay' | 'auto-orders'>(() => {
+    if (initialSection) return initialSection;
     try {
-      if (sessionStorage.getItem('yashi_biz_initial_tab') === 'pay') {
+      const init = sessionStorage.getItem('yashi_biz_initial_tab');
+      if (init === 'pay' || init === 'auto-orders') {
         sessionStorage.removeItem('yashi_biz_initial_tab');
-        return 'pay';
+        return init;
       }
     } catch {}
     return 'store';
   });
+
+  useEffect(() => {
+    if (initialSection) {
+      setSectionTab(initialSection);
+    }
+  }, [initialSection]);
+  const [autoOrderInitialSubTab, setAutoOrderInitialSubTab] = useState<'orders' | 'guild'>('orders');
   const [botState, setBotState] = useState<ServerBotState | null>(null);
   const [logs, setLogs] = useState<ServerBotLog[]>([]);
   const [mode, setMode] = useState<'pairCode' | 'qrCode'>('pairCode');
@@ -133,6 +152,15 @@ export const BusinessBotView: React.FC = () => {
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [isSendingWaApk, setIsSendingWaApk] = useState(false);
   const [isDownloadingApk, setIsDownloadingApk] = useState(false);
+  const [ffLiveBalance, setFfLiveBalance] = useState<{
+    connected: boolean;
+    username?: string;
+    basicCredits: number | null;
+    premiumCredits: number | null;
+    activeGroupsCount: number | null;
+    maxGroups: number | null;
+    mode?: string;
+  } | null>(null);
 
   const handleHeaderSendWaApk = async () => {
     if (isSendingWaApk) return;
@@ -212,10 +240,11 @@ export const BusinessBotView: React.FC = () => {
   const codeResultRef = useRef<HTMLDivElement | null>(null);
 
   const getBizHeaders = useCallback(
-    (extra: Record<string, string> = {}) => ({
-      'x-user-id': businessBotUserId,
-      ...extra,
-    }),
+    (extra: Record<string, string> = {}) =>
+      withAuthHeaders({
+        'x-user-id': businessBotUserId,
+        ...extra,
+      }),
     [businessBotUserId]
   );
 
@@ -296,18 +325,53 @@ export const BusinessBotView: React.FC = () => {
     }
   }, [getBizHeaders]);
 
-  // Initial load + polling + sidebar pay deep-link listener
+  const fetchLiveFFGloryCredits = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auto-orders/dashboard', { headers: getBizHeaders() });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data?.stats) {
+          setFfLiveBalance({
+            connected: json.data.stats.apiConnectionStatus === 'CONNECTED',
+            username: json.data.settings?.cachedBalance?.username,
+            basicCredits: json.data.stats.basicCredits ?? null,
+            premiumCredits: json.data.stats.premiumCredits ?? null,
+            activeGroupsCount: json.data.stats.activeGroupsCount ?? null,
+            maxGroups: json.data.stats.maxGroups ?? null,
+            mode: json.data.settings?.operatingMode,
+          });
+        }
+      }
+    } catch {
+      // ignore transient errors
+    }
+  }, [getBizHeaders]);
+
+  // Initial load + polling + sidebar pay & auto-orders deep-link listener
   useEffect(() => {
     fetchBusinessStore();
+    fetchLiveFFGloryCredits();
+    const creditTimer = setInterval(fetchLiveFFGloryCredits, 20000);
     const onOpenPay = () => {
       try {
         sessionStorage.removeItem('yashi_biz_initial_tab');
       } catch {}
       setSectionTab('pay');
     };
+    const onOpenAutoOrders = () => {
+      try {
+        sessionStorage.removeItem('yashi_biz_initial_tab');
+      } catch {}
+      setSectionTab('auto-orders');
+    };
     window.addEventListener('yashi:open-biz-pay', onOpenPay);
-    return () => window.removeEventListener('yashi:open-biz-pay', onOpenPay);
-  }, [fetchBusinessStore]);
+    window.addEventListener('yashi:open-biz-auto-orders', onOpenAutoOrders);
+    return () => {
+      clearInterval(creditTimer);
+      window.removeEventListener('yashi:open-biz-pay', onOpenPay);
+      window.removeEventListener('yashi:open-biz-auto-orders', onOpenAutoOrders);
+    };
+  }, [fetchBusinessStore, fetchLiveFFGloryCredits]);
 
   useEffect(() => {
     let cancelled = false;
@@ -876,148 +940,298 @@ export const BusinessBotView: React.FC = () => {
     new Set([...allCategories, ...filteredProducts.map((p) => p.category)])
   ).filter((cat) => filteredProducts.some((p) => p.category === cat));
 
-  return (
-    <div className="max-w-3xl mx-auto px-4 py-5 space-y-5 pb-28">
-      {/* Top Bar */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => {
-            soundFX.playClick();
-            setActiveTab('dashboard');
-          }}
-          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors p-1 cursor-pointer"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Home</span>
-        </button>
+  if (!isAdmin && user.plan !== 'business') {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-10">
+        <div className="rounded-3xl bg-[#09090d] border border-amber-500/40 p-6 sm:p-8 space-y-5 shadow-[0_20px_60px_rgba(0,0,0,0.65)]">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-400/50 flex items-center justify-center text-amber-300 shrink-0">
+              <Briefcase className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-amber-300 tracking-tight">
+                YASHI HALLS BUSINESS Workspace Locked
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Business Bot Store, YASHI HALLS Pay APK, and FFGlory Auto-Orders require an admin-approved BUSINESS subscription.
+              </p>
+            </div>
+          </div>
 
-        <div
-          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-mono border ${
-            isOnline
-              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
-              : 'bg-fuchsia-500/10 border-fuchsia-500/30 text-fuchsia-300'
-          }`}
-        >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              isOnline ? 'bg-emerald-400' : 'bg-fuchsia-400'
-            } animate-ping`}
-          />
-          <span>{isOnline ? 'BUSINESS BOT ONLINE' : 'SEPARATE BUSINESS BOT'}</span>
+          <div className="p-4 rounded-2xl bg-[#111118] border border-amber-500/20 text-xs text-slate-300 leading-relaxed">
+            Your current server subscription is <span className="font-mono font-bold text-white uppercase">{user.plan}</span>. Transfer the monthly BUSINESS package fee via bank transfer and upload your receipt to unlock the dedicated Luxury Black &amp; Gold Business Dashboard for 30 days.
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                navigateToSubscription('business');
+              }}
+              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap"
+            >
+              Upgrade to BUSINESS
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setActiveTab('dashboard');
+              }}
+              className="px-4 py-2.5 rounded-xl bg-[#151520] border border-slate-700 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+            >
+              Back to Dashboard
+            </button>
+          </div>
         </div>
       </div>
+    );
+  }
 
-      {/* Hero Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-3xl bg-gradient-to-br from-[#121226] via-[#0e1525] to-[#111822] border border-fuchsia-500/30 shadow-[0_0_30px_rgba(217,70,239,0.12)]">
-        <div className="flex items-center gap-3.5">
-          <div className="w-14 h-14 rounded-2xl border-2 border-fuchsia-400/50 overflow-hidden flex items-center justify-center bg-[#0c1120] shrink-0 shadow-[0_0_20px_rgba(217,70,239,0.25)]">
-            {store?.mainLogoUrl ? (
-              <img
-                src={store.mainLogoUrl}
-                alt="Store Logo"
-                className="w-full h-full object-cover"
+  return (
+    <div className={embedded ? 'space-y-5' : 'max-w-3xl mx-auto px-4 py-5 space-y-5 pb-28'}>
+      {!embedded && (
+        <>
+          {/* Top Bar */}
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => {
+                soundFX.playClick();
+                setActiveTab('dashboard');
+              }}
+              className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors p-1 cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to Home</span>
+            </button>
+
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-mono border ${
+                isOnline
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                  : 'bg-fuchsia-500/10 border-fuchsia-500/30 text-fuchsia-300'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isOnline ? 'bg-emerald-400' : 'bg-fuchsia-400'
+                } animate-ping`}
               />
-            ) : (
-              <Briefcase className="w-7 h-7 text-fuchsia-400" />
-            )}
+              <span>{isOnline ? 'BUSINESS BOT ONLINE' : 'SEPARATE BUSINESS BOT'}</span>
+            </div>
           </div>
+
+          {/* Hero Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-3xl bg-gradient-to-br from-[#121226] via-[#0e1525] to-[#111822] border border-fuchsia-500/30 shadow-[0_0_30px_rgba(217,70,239,0.12)]">
+            <div className="flex items-center gap-3.5">
+              <div className="w-14 h-14 rounded-2xl border-2 border-fuchsia-400/50 overflow-hidden flex items-center justify-center bg-[#0c1120] shrink-0 shadow-[0_0_20px_rgba(217,70,239,0.25)]">
+                {store?.mainLogoUrl ? (
+                  <img
+                    src={store.mainLogoUrl}
+                    alt="Store Logo"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <Briefcase className="w-7 h-7 text-fuchsia-400" />
+                )}
+              </div>
+              <div>
+                <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2 flex-wrap">
+                  <span>{store?.storeName || 'BUSINESS BOT'}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40 font-mono">
+                    STORE
+                  </span>
+                </h1>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Panels &amp; Free Fire Glory Bot Store • කාඩ් මෙනු, මිල ගණන්, Logo සහ Out of Stock පාලනය
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <button
+                type="button"
+                onClick={handleHeaderSendWaApk}
+                disabled={isSendingWaApk}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+              >
+                <Send className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>{isSendingWaApk ? 'Sending...' : 'Send APK (WA)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleHeaderDownloadApk}
+                disabled={isDownloadingApk}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+              >
+                <Download className="w-4 h-4 stroke-[2.5]" />
+                <span>{isDownloadingApk ? 'Saving...' : 'Pay APK'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={openAddProductModal}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 hover:from-fuchsia-400 hover:to-pink-400 text-white font-black text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(217,70,239,0.4)] cursor-pointer transition-all shrink-0 whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4 stroke-[3]" />
+                <span>Add Product</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Live FFGlory Credit Summary Strip */}
+          {ffLiveBalance && (
+            <div className="rounded-2xl bg-[#0c1322] border border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-3 flex-wrap font-mono tabular-nums">
+                <span className="text-slate-400 font-sans font-semibold">FFGlory API:</span>
+                {ffLiveBalance.connected ? (
+                  <>
+                    <span className="text-sky-400 font-bold">
+                      Basic: {ffLiveBalance.basicCredits ?? 0}
+                    </span>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-amber-300 font-bold">
+                      Premium: {ffLiveBalance.premiumCredits ?? 0}
+                    </span>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-emerald-400">
+                      Groups: {ffLiveBalance.activeGroupsCount ?? 0}/{ffLiveBalance.maxGroups ?? 0}
+                    </span>
+                    {ffLiveBalance.mode && (
+                      <>
+                        <span className="text-slate-600">·</span>
+                        <span className={ffLiveBalance.mode === 'LIVE' ? 'text-emerald-300' : 'text-amber-300'}>
+                          {ffLiveBalance.mode}
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-amber-400 font-sans">Not connected yet — add API key to view live credits</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundFX.playClick();
+                    setAutoOrderInitialSubTab('guild');
+                    setSectionTab('auto-orders');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-purple-600/25 hover:bg-purple-600/40 border border-purple-400/40 text-xs font-bold text-purple-200 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  ⚔️ Glory Bot Prices →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundFX.playClick();
+                    setAutoOrderInitialSubTab('orders');
+                    setSectionTab('auto-orders');
+                  }}
+                  className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {ffLiveBalance.connected ? 'Manage Auto Orders →' : 'Connect FFGlory API →'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Main Sub-navigation Segmented Control */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1.5 rounded-2xl bg-[#0c121e] border border-[#1e2a3c]">
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setSectionTab('store');
+              }}
+              className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                sectionTab === 'store'
+                  ? 'bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Store className="w-4 h-4 shrink-0" />
+              <span className="truncate">Store ({store?.products?.length || 0})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setSectionTab('auto-orders');
+              }}
+              className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                sectionTab === 'auto-orders'
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black shadow-lg'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Flame className="w-4 h-4 shrink-0" />
+              <span className="truncate">Auto Orders</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setSectionTab('connect');
+              }}
+              className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                sectionTab === 'connect'
+                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-black shadow-lg'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <LinkIcon className="w-4 h-4 shrink-0" />
+              <span className="truncate">Bot Connect</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setSectionTab('pay');
+              }}
+              className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                sectionTab === 'pay'
+                  ? 'bg-amber-400 text-slate-950 font-black shadow-lg'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <KeyRound className="w-4 h-4 shrink-0" />
+              <span className="truncate">Pay App &amp; API</span>
+            </button>
+          </div>
+        </>
+      )}
+
+      {embedded && sectionTab === 'store' && (
+        <div className="flex items-center justify-between gap-3 p-4 rounded-2xl bg-[#0d0d12] border border-amber-500/25">
           <div>
-            <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2 flex-wrap">
-              <span>{store?.storeName || 'BUSINESS BOT'}</span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40 font-mono">
-                STORE
-              </span>
-            </h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Panels &amp; Free Fire Glory Bot Store • කාඩ් මෙනු, මිල ගණන්, Logo සහ Out of Stock පාලනය
-            </p>
+            <h3 className="text-sm font-bold text-amber-200">{store?.storeName || 'Business Store Catalog'}</h3>
+            <p className="text-xs text-slate-400 font-mono tabular-nums">{store?.products?.length || 0} products active</p>
           </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          <button
-            type="button"
-            onClick={handleHeaderSendWaApk}
-            disabled={isSendingWaApk}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
-          >
-            <Send className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>{isSendingWaApk ? 'Sending...' : 'Send APK (WA)'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleHeaderDownloadApk}
-            disabled={isDownloadingApk}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
-          >
-            <Download className="w-4 h-4 stroke-[2.5]" />
-            <span>{isDownloadingApk ? 'Saving...' : 'Pay APK'}</span>
-          </button>
-
           <button
             type="button"
             onClick={openAddProductModal}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 hover:from-fuchsia-400 hover:to-pink-400 text-white font-black text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(217,70,239,0.4)] cursor-pointer transition-all shrink-0 whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap"
           >
-            <Plus className="w-4 h-4 stroke-[3]" />
+            <Plus className="w-4 h-4 stroke-[2.5]" />
             <span>Add Product</span>
           </button>
         </div>
-      </div>
+      )}
 
-      {/* Main Sub-navigation Segmented Control */}
-      <div className="grid grid-cols-3 gap-1.5 p-1.5 rounded-2xl bg-[#0c121e] border border-[#1e2a3c]">
-        <button
-          type="button"
-          onClick={() => {
-            soundFX.playClick();
-            setSectionTab('store');
-          }}
-          className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-            sectionTab === 'store'
-              ? 'bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-lg'
-              : 'text-slate-400 hover:text-white'
-          }`}
-        >
-          <Store className="w-4 h-4 shrink-0" />
-          <span className="truncate">Store ({store?.products?.length || 0})</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            soundFX.playClick();
-            setSectionTab('connect');
-          }}
-          className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-            sectionTab === 'connect'
-              ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-black shadow-lg'
-              : 'text-slate-400 hover:text-white'
-          }`}
-        >
-          <LinkIcon className="w-4 h-4 shrink-0" />
-          <span className="truncate">Bot Connect</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            soundFX.playClick();
-            setSectionTab('pay');
-          }}
-          className={`py-2.5 px-2 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
-            sectionTab === 'pay'
-              ? 'bg-amber-400 text-slate-950 font-black shadow-lg'
-              : 'text-slate-400 hover:text-white'
-          }`}
-        >
-          <KeyRound className="w-4 h-4 shrink-0" />
-          <span className="truncate">Pay App &amp; API</span>
-        </button>
-      </div>
-
-      {sectionTab === 'pay' ? (
+      {sectionTab === 'auto-orders' ? (
+        <AutoOrderManagementView
+          tenantId={businessBotUserId}
+          onToast={addToast}
+          initialSubTab={autoOrderInitialSubTab}
+        />
+      ) : sectionTab === 'pay' ? (
         <BusinessPayPanel businessBotUserId={businessBotUserId} onToast={addToast} />
       ) : sectionTab === 'store' ? (
         <div className="space-y-5">

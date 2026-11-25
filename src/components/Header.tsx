@@ -26,7 +26,7 @@ export const Header: React.FC = () => {
     setIsSidebarOpen, 
     notifications, 
     markAllNotificationsRead,
-    setOpenProModal,
+    subscriptionSummary,
     logout,
     isAdmin
   } = useApp();
@@ -110,7 +110,23 @@ export const Header: React.FC = () => {
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              soundFX.playClick();
+              setActiveTab('subscription');
+            }}
+            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-cyan-500/35 bg-[#081222] hover:border-cyan-400 text-xs font-semibold text-cyan-300 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <CreditCard className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span>
+              {user.plan !== 'mini' && (subscriptionSummary?.daysRemaining ?? 0) > 0
+                ? `${user.plan.toUpperCase()} · ${subscriptionSummary?.daysRemaining}d`
+                : 'Subscriptions'}
+            </span>
+          </button>
+
           {/* Animated Coin Pill (Matching Screenshot: Gold $ icon + 1630) */}
           <motion.button
             whileHover={{ scale: 1.04, y: -1 }}
@@ -304,13 +320,13 @@ export const Header: React.FC = () => {
                     <button
                       onClick={() => {
                         soundFX.playClick();
-                        setOpenProModal(true);
+                        setActiveTab('subscription');
                         setIsUserMenuOpen(false);
                       }}
                       className="w-full flex items-center gap-2.5 px-4 py-2 text-xs sm:text-sm text-slate-300 hover:text-white hover:bg-[#0e1d32] transition-colors text-left"
                     >
                       <CreditCard className="w-4 h-4 text-purple-400" />
-                      <span>Upgrade Plan</span>
+                      <span>Subscriptions &amp; Plans</span>
                     </button>
 
                     <button

@@ -1,10 +1,10 @@
 import React from 'react';
-import { 
-  Home, 
-  Bot, 
-  Layers, 
-  Wallet, 
-  Settings 
+import {
+  Home,
+  Bot,
+  CreditCard,
+  Wallet,
+  Settings,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp } from '../context/AppContext';
@@ -17,7 +17,7 @@ export const BottomNav: React.FC = () => {
   const tabs: { id: AppTab; label: string; icon: React.ElementType }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: Home },
     { id: 'deployments', label: 'Bots', icon: Bot },
-    { id: 'templates', label: 'Templates', icon: Layers },
+    { id: 'subscription', label: 'Plans', icon: CreditCard },
     { id: 'wallet', label: 'Wallet', icon: Wallet },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
@@ -32,19 +32,20 @@ export const BottomNav: React.FC = () => {
       <div className="max-w-md mx-auto flex items-center justify-around relative">
         {tabs.map((tab) => {
           const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
+          const isActive =
+            activeTab === tab.id ||
+            (tab.id === 'subscription' && (activeTab === 'billing' || activeTab === 'pricing'));
 
           return (
             <button
               key={tab.id}
               onClick={() => handleTabClick(tab.id)}
-              className={`relative flex flex-col items-center justify-center py-1 px-3 min-w-[56px] transition-all select-none ${
+              className={`relative flex flex-col items-center justify-center py-1 px-3 min-w-[56px] transition-all select-none whitespace-nowrap shrink-0 cursor-pointer ${
                 isActive
                   ? 'text-cyan-400 font-bold'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              {/* Active Cyan Neon Glow Line on top */}
               {isActive && (
                 <motion.div
                   layoutId="active-tab-glow"
@@ -53,8 +54,18 @@ export const BottomNav: React.FC = () => {
                 />
               )}
 
-              <Icon className={`w-5 h-5 mb-1 transition-all duration-200 ${isActive ? 'scale-110 text-cyan-400 drop-shadow-[0_0_8px_rgba(0,240,255,0.7)]' : ''}`} />
-              <span className={`text-[11px] tracking-tight transition-colors ${isActive ? 'text-cyan-400 font-bold drop-shadow-[0_0_6px_rgba(0,240,255,0.4)]' : 'text-slate-400'}`}>
+              <Icon
+                className={`w-5 h-5 mb-1 transition-all duration-200 ${
+                  isActive
+                    ? 'scale-110 text-cyan-400 drop-shadow-[0_0_8px_rgba(0,240,255,0.7)]'
+                    : ''
+                }`}
+              />
+              <span
+                className={`text-[11px] tracking-tight transition-colors ${
+                  isActive ? 'text-cyan-400 font-bold' : 'text-slate-400'
+                }`}
+              >
                 {tab.label}
               </span>
             </button>

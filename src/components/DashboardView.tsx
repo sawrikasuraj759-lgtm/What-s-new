@@ -34,25 +34,24 @@ import { CyberBotHologram } from './CyberBotHologram';
 import { WhatsAppMenuInteractivePreview } from './WhatsAppMenuInteractivePreview';
 
 export const DashboardView: React.FC = () => {
-  const { 
-    user, 
-    coins, 
-    bots, 
+  const {
+    user,
+    coins,
+    bots,
     serverBotState,
-    restartBot, 
-    toggleBotState, 
+    restartBot,
+    toggleBotState,
     stopBot,
-    clearSession,
-    setOpenTerminalBot, 
+    setOpenTerminalBot,
     setActiveTab,
-    changePlan,
     updateBotConfig,
-    resetQuotas,
-    setOpenProModal,
     setOpenDeployModal,
     setOpenCoinModal,
     syncBotProfilePic,
     setOpenEditBotModal,
+    subscriptionSummary,
+    billingConfig,
+    navigateToSubscription,
   } = useApp();
 
   const isOnline = serverBotState?.isOnline ?? false;
@@ -60,29 +59,19 @@ export const DashboardView: React.FC = () => {
   const isBusiness = currentPlan === 'business';
   const isPro = currentPlan === 'pro';
   const isProOrBusiness = isPro || isBusiness;
+  const proPriceLkr = billingConfig?.packagePricesLkr?.pro ?? 500;
+  const bizPriceLkr = billingConfig?.packagePricesLkr?.business ?? 1000;
   const runningCount = isOnline ? 1 : 0;
   const maxSlots = isBusiness ? 25 : isPro ? 5 : 1;
-  const latencyDisplay = isOnline ? `${serverBotState?.lastPingMs ?? 0} ms (Turbo ⚡)` : '—';
+  const latencyDisplay = isOnline ? `${serverBotState?.lastPingMs ?? 0} ms` : '—';
   const uptimeMinutes = Math.floor((serverBotState?.uptimeSeconds || 0) / 60);
-  const [copiedKeepAlive, setCopiedKeepAlive] = React.useState(false);
-  const [showKeepAliveGuide, setShowKeepAliveGuide] = React.useState(false);
-  const keepAliveUrl = typeof window !== 'undefined' 
-    ? `${window.location.origin}/api/keepalive`
-    : 'https://ais-dev-hz54u4ecb2jgnndx3vltqa-722539631465.asia-southeast1.run.app/api/keepalive';
-
-  const handleCopyKeepAlive = () => {
-    soundFX.playClick();
-    navigator.clipboard.writeText(keepAliveUrl);
-    setCopiedKeepAlive(true);
-    setTimeout(() => setCopiedKeepAlive(false), 2500);
-  };
   const uptimeSeconds = (serverBotState?.uptimeSeconds || 0) % 60;
   const uptimeDisplay = isOnline ? `${uptimeMinutes}m ${uptimeSeconds}s` : 'Offline';
 
   const mediaUsed = serverBotState?.quotas?.mediaRequestsUsed || 0;
-  const mediaMax = serverBotState?.quotas?.mediaQuotaMax || (isBusiness ? 999999 : isPro ? 1000 : 5);
+  const mediaMax = serverBotState?.quotas?.mediaQuotaMax || (isBusiness ? 999999 : isPro ? 1000 : 50);
   const aiUsed = serverBotState?.quotas?.aiRequestsUsed || 0;
-  const aiMax = serverBotState?.quotas?.aiQuotaMax || (isBusiness ? 999999 : isPro ? 5000 : 10);
+  const aiMax = serverBotState?.quotas?.aiQuotaMax || (isBusiness ? 999999 : isPro ? 5000 : 100);
 
   const mediaPercent = Math.min(100, Math.round((mediaUsed / mediaMax) * 100));
   const aiPercent = Math.min(100, Math.round((aiUsed / aiMax) * 100));
@@ -90,7 +79,7 @@ export const DashboardView: React.FC = () => {
   const handleToggleAntiLink = () => {
     soundFX.playClick();
     if (!isProOrBusiness) {
-      setOpenProModal(true);
+      navigateToSubscription('pro');
       return;
     }
     updateBotConfig({ antiLink: !serverBotState?.config.antiLink });
@@ -99,7 +88,7 @@ export const DashboardView: React.FC = () => {
   const handleToggleAntiSpam = () => {
     soundFX.playClick();
     if (!isProOrBusiness) {
-      setOpenProModal(true);
+      navigateToSubscription('pro');
       return;
     }
     updateBotConfig({ antiSpam: !serverBotState?.config.antiSpam });
@@ -184,50 +173,63 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. THREE-TIER PLAN SELECTOR TABS WITH LOCKS (MINI FREE, PRO 10c, BUSINESS 30c) */}
+      {/* Expired Subscription Notice */}
+      {subscriptionSummary?.status === 'EXPIRED' && (
+        <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="text-amber-200">
+            <strong className="text-amber-300">Subscription Expired:</strong> Your account was downgraded to MINI (Free Forever). Renew PRO or BUSINESS via bank transfer to restore premium tools.
+          </div>
+          <button
+            type="button"
+            onClick={() => navigateToSubscription('pro')}
+            className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            Renew Subscription
+          </button>
+        </div>
+      )}
+
+      {/* 2. MINI STARTER PLAN & UPGRADE ACCESS */}
       <div className="p-1 rounded-2xl bg-[#060C18] border border-[#101E34] grid grid-cols-3 gap-1">
         <button
-          onClick={() => changePlan('mini')}
-          className={`py-2 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 transition-all ${
-            currentPlan === 'mini'
-              ? 'bg-gradient-to-r from-[#00F0FF] to-[#00D2FF] text-slate-950 font-black shadow-[0_0_18px_rgba(0,240,255,0.5)]'
-              : 'text-slate-400 hover:text-white hover:bg-[#0c1626]'
-          }`}
+          type="button"
+          onClick={() => navigateToSubscription('pro')}
+          className="py-2.5 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 bg-gradient-to-r from-[#00F0FF] to-[#00D2FF] text-slate-950 font-black shadow-[0_0_18px_rgba(0,240,255,0.4)] whitespace-nowrap"
         >
-          <Crown className={`w-3.5 h-3.5 ${currentPlan === 'mini' ? 'text-slate-950 stroke-[2.5]' : 'text-slate-400'}`} />
+          <Crown className="w-3.5 h-3.5 text-slate-950 shrink-0" />
           <span>MINI</span>
           <span className="text-[10px] font-mono opacity-80">(FREE)</span>
         </button>
 
         <button
-          onClick={() => changePlan('pro')}
-          className={`py-2 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 transition-all ${
-            currentPlan === 'pro'
-              ? 'bg-gradient-to-r from-[#00F0FF] to-[#00D2FF] text-slate-950 font-black shadow-[0_0_18px_rgba(0,240,255,0.5)]'
-              : 'text-slate-400 hover:text-white hover:bg-[#0c1626]'
-          }`}
+          type="button"
+          onClick={() => {
+            soundFX.playClick();
+            navigateToSubscription('pro');
+          }}
+          className="py-2.5 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 text-cyan-300 hover:text-white hover:bg-[#0c1626] transition-all whitespace-nowrap cursor-pointer"
         >
-          <Zap className={`w-3.5 h-3.5 ${currentPlan === 'pro' ? 'text-slate-950 stroke-[2.5]' : 'text-slate-400'}`} />
+          <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
           <span>PRO</span>
-          {!user.ownedPlans?.includes('pro') && currentPlan !== 'pro' && (
-            <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/80 px-1 rounded border border-cyan-500/30">10🪙</span>
-          )}
+          <span className="text-[10px] font-mono tabular-nums text-cyan-300">
+            LKR {proPriceLkr.toLocaleString()}
+          </span>
         </button>
 
         <button
-          onClick={() => changePlan('business')}
-          className={`py-2 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 transition-all ${
-            currentPlan === 'business'
-              ? 'bg-gradient-to-r from-[#00F0FF] to-[#00D2FF] text-slate-950 font-black shadow-[0_0_18px_rgba(0,240,255,0.5)]'
-              : 'text-slate-400 hover:text-white hover:bg-[#0c1626]'
-          }`}
+          type="button"
+          onClick={() => {
+            soundFX.playClick();
+            navigateToSubscription('business');
+          }}
+          className="py-2.5 px-2 sm:px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1 sm:gap-1.5 text-amber-300 hover:text-amber-200 hover:bg-[#16130b] transition-all whitespace-nowrap cursor-pointer"
         >
-          <Crown className={`w-3.5 h-3.5 ${currentPlan === 'business' ? 'text-slate-950 stroke-[2.5]' : 'text-slate-400'}`} />
+          <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span className="hidden sm:inline">BUSINESS</span>
           <span className="sm:hidden">BIZ</span>
-          {!user.ownedPlans?.includes('business') && currentPlan !== 'business' && (
-            <span className="text-[10px] font-mono text-amber-300 bg-amber-950/80 px-1 rounded border border-amber-500/30">30🪙</span>
-          )}
+          <span className="text-[10px] font-mono tabular-nums text-amber-300">
+            LKR {bizPriceLkr.toLocaleString()}
+          </span>
         </button>
       </div>
 
@@ -931,7 +933,7 @@ export const DashboardView: React.FC = () => {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={syncBotProfilePic}
+              onClick={() => syncBotProfilePic()}
               className="px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs font-bold transition-all"
             >
               Sync Bot Logo

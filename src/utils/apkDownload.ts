@@ -1,3 +1,5 @@
+import { withAuthHeaders } from './authHeaders';
+
 export interface WhatsAppApkResult {
   success: boolean;
   sentTo?: string;
@@ -66,10 +68,10 @@ export async function sendPayApkToWhatsApp(
   const res = await fetch('/api/business/pay/apk/send-whatsapp', {
     method: 'POST',
     credentials: 'include',
-    headers: {
+    headers: withAuthHeaders({
       'Content-Type': 'application/json',
       'x-user-id': businessBotUserId,
-    },
+    }),
     body: JSON.stringify({
       userId: businessBotUserId,
       phoneNumber: phoneNumber?.trim() || undefined,

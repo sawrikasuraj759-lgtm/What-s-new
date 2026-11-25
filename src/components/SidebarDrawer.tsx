@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { 
   X, 
   LayoutDashboard, 
@@ -10,18 +10,13 @@ import {
   UserPlus, 
   Settings,
   Link as LinkIcon,
-  ShieldAlert,
-  Briefcase,
-  Download,
-  KeyRound,
-  Send
+  ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { APP_CONFIG } from '../data/initialData';
 import { AppTab } from '../types';
 import { soundFX } from '../utils/sound';
-import { downloadPayApkViaBlob, sendPayApkToWhatsApp } from '../utils/apkDownload';
 
 interface NavItem {
   id: AppTab;
@@ -32,12 +27,11 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'subscription', label: 'Subscriptions', icon: CreditCard, badge: 'PLANS' },
   { id: 'deployments', label: 'Pairing & Deploy', icon: LinkIcon },
-  { id: 'business-bot', label: 'Business Bot', icon: Briefcase, badge: 'BIZ' },
   { id: 'templates', label: 'YASHI PRO Template', icon: LayoutGrid },
   { id: 'wallet', label: 'Wallet', icon: Wallet },
-  { id: 'billing', label: 'Billing', icon: CreditCard },
-  { id: 'pricing', label: 'Pricing', icon: Tag },
+  { id: 'pricing', label: 'Bank Transfer', icon: Tag },
   { id: 'suggest', label: 'Suggest', icon: Lightbulb },
   { id: 'invite', label: 'Invite', icon: UserPlus },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -49,55 +43,14 @@ export const SidebarDrawer: React.FC = () => {
     setIsSidebarOpen, 
     activeTab, 
     setActiveTab, 
-    setOpenProModal, 
     setOpenInviteModal,
-    addToast,
-    isAdmin,
-    effectiveUserId 
+    isAdmin
   } = useApp();
-
-  const [isSendingWaApk, setIsSendingWaApk] = useState(false);
-  const [isDownloadingApk, setIsDownloadingApk] = useState(false);
-  const businessBotUserId = `${effectiveUserId || 'primary'}__business`;
-
-  const handleSendApkToWhatsApp = async () => {
-    if (isSendingWaApk) return;
-    soundFX.playClick();
-    setIsSendingWaApk(true);
-    try {
-      const result = await sendPayApkToWhatsApp(businessBotUserId);
-      if (result.success) {
-        soundFX.playSuccess();
-        addToast(result.message, 'success');
-      } else {
-        addToast(result.message, 'error');
-      }
-    } catch {
-      addToast('WhatsApp වෙත APK එක යැවීමේදී දෝෂයක් ඇති විය.', 'error');
-    } finally {
-      setIsSendingWaApk(false);
-    }
-  };
-
-  const handleDownloadApk = async () => {
-    if (isDownloadingApk) return;
-    soundFX.playClick();
-    setIsDownloadingApk(true);
-    try {
-      await downloadPayApkViaBlob();
-      soundFX.playSuccess();
-      addToast('YashiHallsPay-v1.0.0.apk ඩවුන්ලෝඩ් විය — Install කරන්න.', 'success');
-    } catch (err: any) {
-      addToast(err?.message || 'Download blocked — Send APK to WhatsApp භාවිතා කරන්න.', 'error');
-    } finally {
-      setIsDownloadingApk(false);
-    }
-  };
 
   const handleNavClick = (id: AppTab) => {
     soundFX.playClick();
-    if (id === 'billing' || id === 'pricing') {
-      setOpenProModal(true);
+    if (id === 'billing' || id === 'pricing' || id === 'subscription') {
+      setActiveTab('subscription');
       setIsSidebarOpen(false);
       return;
     }
@@ -177,77 +130,25 @@ export const SidebarDrawer: React.FC = () => {
                   const isActive = activeTab === item.id;
 
                   return (
-                    <React.Fragment key={item.id}>
-                      <motion.button
-                        whileHover={{ x: 4 }}
-                        whileTap={{ scale: 0.97 }}
-                        onClick={() => handleNavClick(item.id)}
-                        className={`w-full flex items-center gap-3.5 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-left whitespace-nowrap ${
-                          isActive
-                            ? 'border border-cyan-500/70 bg-cyan-950/30 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.15)] font-bold'
-                            : 'border border-transparent text-slate-300 hover:text-white hover:bg-[#151f2b]'
-                        }`}
-                      >
-                        <Icon className={`w-5 h-5 shrink-0 ${isActive ? 'text-cyan-400' : 'text-slate-400'}`} />
-                        <span className="flex-1 truncate">{item.label}</span>
-                        {item.badge && (
-                          <span className="text-[10px] font-mono font-bold text-emerald-400 shrink-0">
-                            {item.badge}
-                          </span>
-                        )}
-                      </motion.button>
-
-                      {item.id === 'business-bot' && (
-                        <div className="pl-4 pr-1 py-1 space-y-1.5">
-                          <button
-                            type="button"
-                            onClick={handleSendApkToWhatsApp}
-                            disabled={isSendingWaApk}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/50 text-emerald-300 text-xs font-bold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60"
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <Send className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                              <span className="truncate">
-                                {isSendingWaApk ? 'Sending to WA...' : 'Send APK to WhatsApp'}
-                              </span>
-                            </span>
-                            <span className="text-[10px] font-mono text-emerald-200/80 shrink-0">.payapk</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={handleDownloadApk}
-                            disabled={isDownloadingApk}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-xs font-bold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60"
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <Download className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                              <span className="truncate">
-                                {isDownloadingApk ? 'Downloading...' : 'Download APK File'}
-                              </span>
-                            </span>
-                            <span className="text-[10px] font-mono text-amber-200/80 shrink-0">v2.0</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              soundFX.playClick();
-                              try {
-                                sessionStorage.setItem('yashi_biz_initial_tab', 'pay');
-                              } catch {}
-                              window.dispatchEvent(new CustomEvent('yashi:open-biz-pay'));
-                              setActiveTab('business-bot');
-                              setIsSidebarOpen(false);
-                            }}
-                            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-cyan-300 hover:text-cyan-200 hover:bg-[#132033] transition-colors text-left cursor-pointer whitespace-nowrap"
-                          >
-                            <KeyRound className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                            <span>Pay App API &amp; Connect</span>
-                          </button>
-                        </div>
+                    <motion.button
+                      key={item.id}
+                      whileHover={{ x: 4 }}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => handleNavClick(item.id)}
+                      className={`w-full flex items-center gap-3.5 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-left whitespace-nowrap ${
+                        isActive
+                          ? 'border border-cyan-500/70 bg-cyan-950/30 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.15)] font-bold'
+                          : 'border border-transparent text-slate-300 hover:text-white hover:bg-[#151f2b]'
+                      }`}
+                    >
+                      <Icon className={`w-5 h-5 shrink-0 ${isActive ? 'text-cyan-400' : 'text-slate-400'}`} />
+                      <span className="flex-1 truncate">{item.label}</span>
+                      {item.badge && (
+                        <span className="text-[10px] font-mono font-bold text-emerald-400 shrink-0">
+                          {item.badge}
+                        </span>
                       )}
-                    </React.Fragment>
+                    </motion.button>
                   );
                 })}
 

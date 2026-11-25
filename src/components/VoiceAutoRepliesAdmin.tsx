@@ -26,6 +26,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { VoiceReply, AdminCustomer } from '../types';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 interface Props {
   userEmail: string;
@@ -94,7 +95,7 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     setIsLoading(true);
     try {
       const res = await fetch('/api/admin/voice-replies', {
-        headers: { 'x-admin-email': userEmail },
+        headers: withAuthHeaders(),
       });
       if (res.ok) {
         const d = await res.json();
@@ -232,10 +233,9 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch('/api/admin/voice-replies/create', {
         method: 'POST',
-        headers: {
-          'x-admin-email': userEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           name: replyName.trim(),
           triggers: triggersText,
@@ -277,10 +277,9 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch(`/api/admin/voice-replies/${reply.id}/toggle`, {
         method: 'POST',
-        headers: {
-          'x-admin-email': userEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({ enabled: targetState }),
       });
       const d = await res.json();
@@ -304,10 +303,9 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch('/api/admin/voice-replies/test-trigger', {
         method: 'POST',
-        headers: {
-          'x-admin-email': userEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({ message: testInput.trim() }),
       });
       const d = await res.json();
@@ -333,10 +331,9 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch(`/api/admin/voice-replies/${editTarget.id}`, {
         method: 'PUT',
-        headers: {
-          'x-admin-email': userEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           name: editName,
           triggers: editTriggers,
@@ -368,10 +365,9 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch(`/api/admin/voice-replies/${replaceTarget.id}/replace-audio`, {
         method: 'POST',
-        headers: {
-          'x-admin-email': userEmail,
+        headers: withAuthHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           audioBase64: replaceBase64,
           audioFileName: replaceFile.name,
@@ -402,7 +398,7 @@ export const VoiceAutoRepliesAdmin: React.FC<Props> = ({ userEmail, addToast, cu
     try {
       const res = await fetch(`/api/admin/voice-replies/${deleteTarget.id}`, {
         method: 'DELETE',
-        headers: { 'x-admin-email': userEmail },
+        headers: withAuthHeaders(),
       });
       const d = await res.json();
       if (d.success) {

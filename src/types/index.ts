@@ -2,6 +2,7 @@ export type AppTab =
   | 'dashboard' 
   | 'deployments' 
   | 'business-bot'
+  | 'subscription'
   | 'templates' 
   | 'wallet' 
   | 'settings' 
@@ -220,6 +221,8 @@ export interface CallEventLog {
 
 export interface ServerBotConfig {
   botName: string;
+  ownerName?: string;
+  botLogoUrl?: string;
   prefix: string;
   mode: 'public' | 'private';
   ownerNumber: string;
@@ -231,6 +234,11 @@ export interface ServerBotConfig {
   welcomeTemplate: string;
   callDetectorEnabled: boolean;
   voiceAutoReplyEnabled: boolean;
+  smartAutoReply?: boolean;
+  channelAutoReact?: boolean;
+  channelReactEmojis?: string;
+  customGreetingSinhala?: string;
+  customGreetingEnglish?: string;
 }
 
 export interface VoiceReply {
@@ -269,6 +277,7 @@ export interface ServerBotState {
   pairedNumber: string | null;
   qrCodeDataUrl: string | null;
   pairingCode: string | null;
+  pairingPhone?: string | null;
   uptimeSeconds: number;
   startedAt: string | null;
   lastPingMs: number;
@@ -284,3 +293,105 @@ export interface ServerBotState {
   config: ServerBotConfig;
   quotas: PlanQuotas;
 }
+
+export interface BankDetailsConfig {
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+  branchName: string;
+  swiftOrCode?: string;
+  instructions: string;
+}
+
+export interface PackagePricesLkr {
+  mini: number;
+  pro: number;
+  business: number;
+}
+
+export interface BillingPackageOption {
+  id: 'mini' | 'pro' | 'business';
+  name: 'MINI' | 'PRO' | 'BUSINESS';
+  priceLkr: number;
+  durationLabel: string;
+  slots: number;
+  tagline: string;
+}
+
+export interface BillingConfigData {
+  bankDetails: BankDetailsConfig;
+  packagePricesLkr: PackagePricesLkr;
+  packages: BillingPackageOption[];
+}
+
+export interface SubscriptionSummary {
+  userId: string;
+  email: string;
+  username: string;
+  plan: 'mini' | 'pro' | 'business';
+  status: 'FREE' | 'ACTIVE' | 'EXPIRED';
+  activatedAt: string | null;
+  expiresAt: string | null;
+  downgradedAt?: string | null;
+  paymentReference: string | null;
+  paymentRequestId: string | null;
+  daysRemaining: number;
+  hoursRemaining: number;
+  isExpiringSoon: boolean;
+  renewalReminderMessage: string | null;
+}
+
+export interface ManualPaymentRequestItem {
+  id: string;
+  orderRef: string;
+  userId: string;
+  customerEmail: string;
+  customerName: string;
+  packageId: 'pro' | 'business';
+  expectedAmountLkr: number;
+  transactionReference: string;
+  normalizedTransactionRef?: string;
+  paymentDate: string;
+  receiptFileName: string;
+  receiptMimeType: string;
+  receiptSizeBytes: number;
+  receiptUrl: string;
+  notes?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  submittedAt: string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  rejectionReason?: string | null;
+  activatedUntil?: string | null;
+}
+
+export interface SubscriptionNotificationItem {
+  id: string;
+  userId: string;
+  email: string;
+  title: string;
+  message: string;
+  type: 'info' | 'success' | 'warning';
+  createdAt: string;
+  read: boolean;
+}
+
+export interface AdminSubscriptionOverview {
+  config: BillingConfigData;
+  requests: ManualPaymentRequestItem[];
+  subscriptions: SubscriptionSummary[];
+  activeSubscriptions: SubscriptionSummary[];
+  expiredSubscriptions: SubscriptionSummary[];
+  revenue: {
+    totalRevenueLkr: number;
+    proRevenueLkr: number;
+    businessRevenueLkr: number;
+    approvedCount: number;
+    pendingCount: number;
+    rejectedCount: number;
+    proActiveCount: number;
+    businessActiveCount: number;
+    expiredCount: number;
+  };
+}
+

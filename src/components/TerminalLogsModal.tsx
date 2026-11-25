@@ -12,6 +12,7 @@ import {
 import { motion } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { soundFX } from '../utils/sound';
+import { withAuthHeaders } from '../utils/authHeaders';
 
 export const TerminalLogsModal: React.FC = () => {
   const { openTerminalBot, setOpenTerminalBot, restartBot, serverLogs, serverBotState, addToast } = useApp();
@@ -59,7 +60,7 @@ export const TerminalLogsModal: React.FC = () => {
       try {
         const res = await fetch('/api/ai/chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ prompt }),
         });
         const data = await res.json();
