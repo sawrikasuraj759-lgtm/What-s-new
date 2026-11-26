@@ -141,8 +141,9 @@ var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,
   pendingMediaChoices: Map<string, { baseCmd: string; query: string; title?: string; opt1Cmd: string; opt2Cmd: string; ts: number }>;
   classicMenuUsers: Set<string>;
   classicMenuContext: Map<string, number>;
+  lastClientDevice: Map<string, "android" | "ios" | "web" | "desktop" | "unknown">;
 
-  constructor(userId="default"){this.sock=null;this.logs=[];this.maxLogs=500;this.startTime=null;this.reconnectAttempts=0;this.maxReconnectAttempts=20;this.isExplicitlyStopped=true;this.reconnectTimer=null;this.activePairingPhone=null;this.customPairingCodeRequested=null;this.groupWarnings=new Map;this.activeQuizSessions=new Map;this.processedCalls=new Set;this.processedMessageIds=new Set;this.commandCooldowns=new Map;this.rawQrString=null;this.requestedFromJid=null;this.isQrReady=false;this.voiceCooldownMap=new Map;this.chatMemory=new Map;this.welcomedBusinessCustomers=new Set;this.businessChatState=new Map;this.businessThumbCache=new Map;this.pendingFilmChoices=new Map;this.pendingMediaChoices=new Map;this.classicMenuUsers=new Set;this.classicMenuContext=new Map;void cleanupStaleMovieTempFiles().catch(()=>{});this.start247Watchdog();this.chatAiCooldownMap=new Map;this.smartReplyCooldownMap=new Map;this.lastWelcomeSentTime=0;this.isStarting=false;this.isFreshPairing=false;this.isPairingCodeInFlight=false;
+  constructor(userId="default"){this.sock=null;this.logs=[];this.maxLogs=500;this.startTime=null;this.reconnectAttempts=0;this.maxReconnectAttempts=20;this.isExplicitlyStopped=true;this.reconnectTimer=null;this.activePairingPhone=null;this.customPairingCodeRequested=null;this.groupWarnings=new Map;this.activeQuizSessions=new Map;this.processedCalls=new Set;this.processedMessageIds=new Set;this.commandCooldowns=new Map;this.rawQrString=null;this.requestedFromJid=null;this.isQrReady=false;this.voiceCooldownMap=new Map;this.chatMemory=new Map;this.welcomedBusinessCustomers=new Set;this.businessChatState=new Map;this.businessThumbCache=new Map;this.pendingFilmChoices=new Map;this.pendingMediaChoices=new Map;this.classicMenuUsers=new Set;this.classicMenuContext=new Map;this.lastClientDevice=new Map;void cleanupStaleMovieTempFiles().catch(()=>{});this.start247Watchdog();this.chatAiCooldownMap=new Map;this.smartReplyCooldownMap=new Map;this.lastWelcomeSentTime=0;this.isStarting=false;this.isFreshPairing=false;this.isPairingCodeInFlight=false;
     this.cachedLogoBuffer = null;
     this.lastCachedLogoUrl = '';
     const initialCandidates = [
@@ -1768,6 +1769,11 @@ Type ".menu" to explore our services.
       }
     }
 
+    const detectedDevEarly = this.detectClientDevice(msg);
+    if (detectedDevEarly !== "unknown") {
+      this.lastClientDevice.set(jid, detectedDevEarly);
+    }
+
     const firstWord = (text.split(/\s+/)[0] || "").toLowerCase();
     const hasAttachedOrQuotedMedia = Boolean(
       rawMsg?.imageMessage ||
@@ -2386,20 +2392,20 @@ Type ".menu" to explore our services.
             await this.reply(
               jid,
               msg,
-              `✅ *Classic Menu Mode Enabled!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nමින් පසු ඔබට UI Card වෙනුවට සෑම විටම *Image + Classic Text Menu* එක ලැබේ.\n(නැවත UI Menu වෙත යාමට *${prefix}ui on* යවන්න)`
+              `✅ *Classic Text Menu Mode Enabled!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nමින් පසු ඔබට UI Card වෙනුවට සෑම විටම *Clean Text Menu* එක ලැබේ.\n(නැවත UI Menu වෙත යාමට *${prefix}ui on* යවන්න)`
             );
           } else if (uiArg === "on" || uiArg === "auto") {
             this.classicMenuUsers.delete(jid);
             await this.reply(
               jid,
               msg,
-              `✅ *Smart Auto UI Menu Mode Enabled!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAndroid උපාංග සඳහා Interactive UI Menu එකත්, අනෙකුත් උපාංග සඳහා Classic Menu එකත් ස්වයංක්‍රීයව ලැබේ.`
+              `✅ *Smart Auto UI Menu Mode Enabled!*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAndroid උපාංග සඳහා Interactive UI Menu එකත්, iOS / PC උපාංග සඳහා Classic Text Menu එකත් ස්වයංක්‍රීයව ලැබේ.`
             );
           } else {
             await this.reply(
               jid,
               msg,
-              `ℹ️ *Menu Display Options:*\n• *${prefix}ui off* — Classic Text & Image Menu සක්‍රිය කිරීම\n• *${prefix}ui on* — Smart Auto UI Menu සක්‍රිය කිරීම\n• *${prefix}textmenu* — Classic Menu එක ක්ෂණිකව බැලීම`
+              `ℹ️ *Menu Display Options:*\n• *${prefix}ui off* — Clean Text Menu සක්‍රිය කිරීම\n• *${prefix}ui on* — Smart Auto UI Menu සක්‍රිය කිරීම\n• *${prefix}textmenu* — Classic Text Menu එක ක්ෂණිකව බැලීම`
             );
           }
           break;
@@ -3279,40 +3285,43 @@ async sendInteractiveButtonsOrFallback(
     const footer = content.footer || `⚡ ${botName} • [${planName} PLAN] • POWERED BY YASHI HALLS`;
     const title = content.title || `👑 ${botName} • WA ASSISTANT 👑`;
 
+    const useUi = this.isUiMenuSupported(quotedMsg, jid);
     let imagePayload: any = content.image || null;
-    if (!imagePayload && content.includeLogo !== false) {
+    if (useUi && !imagePayload && content.includeLogo !== false) {
       try {
         imagePayload = await this.getLogoBuffer();
       } catch {}
     }
 
-    // 1. Try sending true WhatsApp Interactive NativeFlow message with zq_baileys_helper engine (for all chats including self-chat)
-    try {
-      if (this.sock) {
-        await sendButtons(
-          this.sock,
-          jid,
-          {
-            title,
-            text: content.interactiveText || content.text,
-            footer,
-            image: imagePayload || undefined,
-            buttons: content.buttons,
-            sections: content.sections,
-            buttonText: content.buttonText || "📂 SELECT MENU CATEGORY",
-            urls: content.urls,
-            copyCodes: content.copyCodes,
-          },
-          { quoted: quotedMsg }
-        );
-        this.addLog("INFO", `✅ Delivered ZQ native interactive buttons with header banner to ${jid.split("@")[0]}`);
-        return;
+    // 1. Try sending true WhatsApp Interactive NativeFlow message ONLY on supported Android clients
+    if (useUi) {
+      try {
+        if (this.sock) {
+          await sendButtons(
+            this.sock,
+            jid,
+            {
+              title,
+              text: content.interactiveText || content.text,
+              footer,
+              image: imagePayload || undefined,
+              buttons: content.buttons,
+              sections: content.sections,
+              buttonText: content.buttonText || "📂 SELECT MENU CATEGORY",
+              urls: content.urls,
+              copyCodes: content.copyCodes,
+            },
+            { quoted: quotedMsg }
+          );
+          this.addLog("INFO", `✅ Delivered ZQ native interactive buttons with header banner to ${jid.split("@")[0]}`);
+          return;
+        }
+      } catch (err: any) {
+        this.addLog("INFO", `Interactive native button notice: ${err?.message || err}. Delivering rich text fallback.`);
       }
-    } catch (err: any) {
-      this.addLog("INFO", `Interactive native button notice: ${err?.message || err}. Delivering rich text fallback.`);
     }
 
-    // 2. High-Fidelity Formatted Fallback with Bot Logo / Card Image
+    // 2. Clean Text Fallback (pure plain text on iOS/PC/textmenu; optional image fallback only for Android)
     let formattedText = content.fallbackText || content.text;
     if (content.sections && content.sections.length > 0) {
       formattedText += `
@@ -3354,7 +3363,7 @@ async sendInteractiveButtonsOrFallback(
 
 _${footer}_`;
 
-    if (imagePayload) {
+    if (useUi && imagePayload) {
       try {
         const finalImage = Buffer.isBuffer(imagePayload)
           ? imagePayload
@@ -3433,10 +3442,12 @@ _${footer}_`;
         return;
       }
 
-      // Film-style Details & Download Card for MediaFire (Single Card Edited In-Place)
+      // Film-style Details & Download Card for Android; Clean Text Status for iOS / PC
+      const useUiCards = this.isUiMenuSupported(msg, jid);
       let statusCardMsgId: string | null = null;
+      let textStatusKey: any = null;
       const botName = this.state.config.botName || "YASHI HALLS";
-      if (this.sock) {
+      if (useUiCards && this.sock) {
         try {
           const mfBanner = buildPlatformBannerDataUri("MEDIAFIRE", res.fileName);
           const mfDetailsMarkup = generateFilmDetailsCardHtml({
@@ -3485,7 +3496,21 @@ _${footer}_`;
         } catch (e) {}
       }
 
-      if (!statusCardMsgId) {
+      if (!useUiCards) {
+        textStatusKey = await this.sendPlainTextStatus(
+          jid,
+          msg,
+          this.formatDownloadStatusText({
+            icon: "📦",
+            platform: "MEDIAFIRE",
+            title: res.fileName,
+            status: "DOWNLOADING",
+            quality: res.mimeType || "Cloud File",
+            fileSize: res.fileSize || "Cloud File",
+            detailLine: "⚡ _MediaFire Cloud වෙතින් ගොනුව බාගත කරමින් පවතී (2GB Ready)..._",
+          })
+        );
+      } else if (!statusCardMsgId) {
         await this.reply(
           jid,
           msg,
@@ -3507,15 +3532,16 @@ _${footer}_`;
             if (!fileResp.ok) throw new Error(`MediaFire server responded with HTTP status ${fileResp.status}`);
             const arrayBuf = await fileResp.arrayBuffer();
             const buffer = Buffer.from(arrayBuf);
+            const resolvedSize = res.fileSize || `${(buffer.length / (1024 * 1024)).toFixed(1)} MB`;
 
-            if (statusCardMsgId && this.sock) {
+            if (useUiCards && statusCardMsgId && this.sock) {
               const successMarkup = generateFilmDownloadCardHtml({
                 botName,
                 title: res.fileName,
                 status: "COMPLETED",
                 progress: 100,
                 quality: res.mimeType || "Cloud File",
-                fileSize: res.fileSize || `${(buffer.length / (1024 * 1024)).toFixed(1)} MB`,
+                fileSize: resolvedSize,
                 fileName: res.fileName,
                 mediaIcon: "📦",
                 transferLabel: "MEDIAFIRE TRANSFER",
@@ -3524,6 +3550,20 @@ _${footer}_`;
                 height: 215,
               });
               await editHtmlApp(this.sock, jid, statusCardMsgId, successMarkup, { title: "✅ MEDIAFIRE COMPLETED", height: 215 }).catch(() => {});
+            } else if (!useUiCards && textStatusKey) {
+              await this.editPlainTextStatus(
+                jid,
+                textStatusKey,
+                this.formatDownloadStatusText({
+                  icon: "📦",
+                  platform: "MEDIAFIRE",
+                  title: res.fileName,
+                  status: "COMPLETED",
+                  quality: res.mimeType || "Cloud File",
+                  fileSize: resolvedSize,
+                  detailLine: "👇 _ගොනුව පහතින් ලබාගන්න (Tap to Open / Save)._",
+                })
+              );
             }
 
             await this.sock.sendMessage(
@@ -3568,7 +3608,7 @@ _${footer}_`;
             return;
           }
 
-          if (statusCardMsgId && this.sock) {
+          if (useUiCards && statusCardMsgId && this.sock) {
             const successMarkup = generateFilmDownloadCardHtml({
               botName,
               title: res.fileName,
@@ -3584,6 +3624,20 @@ _${footer}_`;
               height: 215,
             });
             await editHtmlApp(this.sock, jid, statusCardMsgId, successMarkup, { title: "✅ MEDIAFIRE COMPLETED", height: 215 }).catch(() => {});
+          } else if (!useUiCards && textStatusKey) {
+            await this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "📦",
+                platform: "MEDIAFIRE",
+                title: res.fileName,
+                status: "COMPLETED",
+                quality: res.mimeType || "Cloud File",
+                fileSize: `${downloadedMB.toFixed(2)} MB`,
+                detailLine: "👇 _ගොනුව පහතින් ලබාගන්න (Tap to Open / Save)._",
+              })
+            );
           }
 
           // Transmit directly via Baileys url-based media upload supporting up to 2GB
@@ -3603,7 +3657,7 @@ _${footer}_`;
           return;
         } catch (streamErr: any) {
           this.addLog("WARN", `Direct stream upload failed: ${streamErr?.message || streamErr}`);
-          if (statusCardMsgId && this.sock) {
+          if (useUiCards && statusCardMsgId && this.sock) {
             const errMarkup = generateFilmDownloadCardHtml({
               botName,
               title: res.fileName,
@@ -3617,6 +3671,20 @@ _${footer}_`;
               height: 215,
             });
             await editHtmlApp(this.sock, jid, statusCardMsgId, errMarkup, { title: "❌ MEDIAFIRE FAILED", height: 215 }).catch(() => {});
+          } else if (!useUiCards && textStatusKey) {
+            await this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "📦",
+                platform: "MEDIAFIRE",
+                title: res.fileName,
+                status: "ERROR",
+                quality: res.mimeType || "Cloud File",
+                fileSize: res.fileSize || "Cloud File",
+                detailLine: `⚠️ _හේතුව:_ ${streamErr?.message || "Upload failed"}`,
+              })
+            );
           }
           const card = `📦 *MEDIAFIRE DIRECT DOWNLOADER* 🚀\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📄 *File Name:* ${res.fileName}\n📊 *File Size:* ${res.fileSize}\n📁 *File Type:* ${res.mimeType}\n\n⚠️ _ගොනුව WhatsApp හරහා සෘජුව යැවීමේදී දෝෂයක් ඇති විය (${streamErr?.message || "Upload error"})._\n⚡ *කරුණාකර මෙම Direct High-Speed Link එකෙන් බාගත කරන්න:*\n🔗 ${res.downloadUrl}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`.trim();
           await this.reply(jid, msg, card);
@@ -3682,7 +3750,7 @@ _POWERED BY YASHI HALLS & CINERU.LK_
       await this.reply(jid, msg, `🔎 *Searching Cineru.lk for film set "${filmSet.setTitle}"...*`);
       const setCard = formatFilmSetCard(filmSet, p);
       let sentImage = false;
-      if (filmSet.posterUrl && this.sock) {
+      if (this.isUiMenuSupported(msg, jid) && filmSet.posterUrl && this.sock) {
         try {
           await Promise.race([
             this.sock.sendMessage(jid, { image: { url: filmSet.posterUrl }, caption: setCard }, { quoted: msg }),
@@ -4066,12 +4134,14 @@ ${langNote}
     const rawQuery = (query || "").trim();
     void cleanupStaleMovieTempFiles().catch(() => {});
 
+    const useUiCards = this.isUiMenuSupported(msg, jid);
+
     // Check if query is asking for a film set
     const detectedSet = searchFilmSets(rawQuery);
     if (detectedSet) {
       const setCard = formatFilmSetCard(detectedSet, p);
       let sentImage = false;
-      if (detectedSet.posterUrl && this.sock) {
+      if (useUiCards && detectedSet.posterUrl && this.sock) {
         try {
           await Promise.race([
             this.sock.sendMessage(jid, { image: { url: detectedSet.posterUrl }, caption: setCard }, { quoted: msg }),
@@ -4194,10 +4264,10 @@ ${langNote}
           ts: Date.now(),
         });
 
-        const posterSrc = await fetchPosterAsDataUri(movie.posterUrl).catch(() => movie.posterUrl);
         let sentDetailsCard = false;
 
-        if (this.sock) {
+        if (useUiCards && this.sock) {
+          const posterSrc = await fetchPosterAsDataUri(movie.posterUrl).catch(() => movie.posterUrl);
           try {
             const detailsMarkup = generateFilmDetailsCardHtml({
               botName,
@@ -4225,9 +4295,9 @@ ${langNote}
         }
 
         if (!sentDetailsCard) {
-          const textChoice = `${formatMovieCard(movie, p)}\n\n👇 *කුමන Quality එකෙන්ද අවශ්‍ය? පහත Command එකක් Copy කර එවන්න (හෝ 1 / 2 Reply කරන්න):*\n\n1️⃣ \`${qualityButtons[0].copyCommand}\` _(${qualityButtons[0].label} • ${qualityButtons[0].size})_\n2️⃣ \`${qualityButtons[1].copyCommand}\` _(${qualityButtons[1].label} • ${qualityButtons[1].size})_`;
+          const textChoice = `${formatMovieCard(movie, p)}\n\n👇 *කුමන Quality එකෙන්ද අවශ්‍ය? පහත අංකය (1 / 2) Reply කරන්න හෝ Command එක Copy කර එවන්න:*\n\n1️⃣ \`${qualityButtons[0].copyCommand}\` _(${qualityButtons[0].label} • ${qualityButtons[0].size})_\n2️⃣ \`${qualityButtons[1].copyCommand}\` _(${qualityButtons[1].label} • ${qualityButtons[1].size})_`;
           let sentImg = false;
-          if (movie.posterUrl && this.sock) {
+          if (useUiCards && movie.posterUrl && this.sock) {
             try {
               await Promise.race([
                 this.sock.sendMessage(jid, { image: { url: movie.posterUrl }, caption: textChoice }, { quoted: msg }),
@@ -4248,7 +4318,7 @@ ${langNote}
       }
 
       // ───────────────────────────────────────────────────────────────────────────
-      // STEP 2: Quality Selected -> Send Downloading Card (Card 2) & Deliver Film Underneath!
+      // STEP 2: Quality Selected -> Card 2 for Android; Clean Plain-Text Status for iOS/PC
       // ───────────────────────────────────────────────────────────────────────────
       this.pendingFilmChoices.delete(jid);
 
@@ -4260,8 +4330,10 @@ ${langNote}
         void this.sock.sendMessage(jid, { react: { text: "⏳", key: msg.key } }).catch(() => {});
       }
 
-      // Send Card 2 immediately so customer sees live download progress right away
-      if (this.sock) {
+      let textStatusKey: any = null;
+
+      // Send Card 2 ONLY on Android; send neat plain-text status on iOS / PC
+      if (useUiCards && this.sock) {
         try {
           const initDlMarkup = generateFilmDownloadCardHtml({
             botName,
@@ -4283,7 +4355,22 @@ ${langNote}
         } catch {}
       }
 
-      if (!dlCardMsgId) {
+      if (!useUiCards) {
+        textStatusKey = await this.sendPlainTextStatus(
+          jid,
+          msg,
+          this.formatDownloadStatusText({
+            icon: "🎬",
+            platform: "MOVIE",
+            title: movie.title,
+            status: "DOWNLOADING",
+            quality: mirrorQuality,
+            fileSize: mirrorSize,
+            progress: 5,
+            detailLine: "⚡ _චිත්‍රපටය Download වෙමින් පවතී... කරුණාකර මොහොතක් රැඳී සිටින්න._",
+          })
+        );
+      } else if (!dlCardMsgId) {
         await this.reply(jid, msg, `⏳ *${movie.title}* (${mirrorQuality} • ${mirrorSize}) Download වෙමින් පවතී...`).catch(() => {});
       }
 
@@ -4295,33 +4382,56 @@ ${langNote}
         movie.title,
         undefined,
         (prog) => {
-          if (!dlCardMsgId || !this.sock) return;
+          if (!this.sock) return;
           const now = Date.now();
-          if (now - lastEditAt < 2500 || Math.abs(prog.percent - lastPct) < 5) return;
-          lastEditAt = now;
-          lastPct = prog.percent;
+          if (useUiCards) {
+            if (!dlCardMsgId) return;
+            if (now - lastEditAt < 2500 || Math.abs(prog.percent - lastPct) < 5) return;
+            lastEditAt = now;
+            lastPct = prog.percent;
 
-          const dlMarkup = generateFilmDownloadCardHtml({
-            botName,
-            title: movie.title,
-            status: "DOWNLOADING",
-            progress: prog.percent,
-            quality: prog.quality || mirrorQuality,
-            fileSize: prog.totalBytes > 0 ? formatBytesSize(prog.totalBytes) : mirrorSize,
-            downloadedText: `${formatBytesSize(prog.downloadedBytes)} / ${formatBytesSize(prog.totalBytes)}`,
-            height: 215,
-          });
-          void editHtmlApp(this.sock, jid, dlCardMsgId, dlMarkup, {
-            title: `⏳ DOWNLOADING ${prog.percent}%`,
-            height: 215,
-          }).catch(() => {});
+            const dlMarkup = generateFilmDownloadCardHtml({
+              botName,
+              title: movie.title,
+              status: "DOWNLOADING",
+              progress: prog.percent,
+              quality: prog.quality || mirrorQuality,
+              fileSize: prog.totalBytes > 0 ? formatBytesSize(prog.totalBytes) : mirrorSize,
+              downloadedText: `${formatBytesSize(prog.downloadedBytes)} / ${formatBytesSize(prog.totalBytes)}`,
+              height: 215,
+            });
+            void editHtmlApp(this.sock, jid, dlCardMsgId, dlMarkup, {
+              title: `⏳ DOWNLOADING ${prog.percent}%`,
+              height: 215,
+            }).catch(() => {});
+          } else if (textStatusKey) {
+            if (now - lastEditAt < 5000 || Math.abs(prog.percent - lastPct) < 15) return;
+            lastEditAt = now;
+            lastPct = prog.percent;
+            const totalText = prog.totalBytes > 0 ? formatBytesSize(prog.totalBytes) : mirrorSize;
+            const dlBytesText = prog.totalBytes > 0 ? `${formatBytesSize(prog.downloadedBytes)} / ${totalText}` : undefined;
+            void this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "🎬",
+                platform: "MOVIE",
+                title: movie.title,
+                status: "DOWNLOADING",
+                quality: prog.quality || mirrorQuality,
+                fileSize: totalText,
+                progress: prog.percent,
+                detailLine: dlBytesText ? `📥 _Downloaded:_ ${dlBytesText}` : undefined,
+              })
+            );
+          }
         }
       );
 
       downloadedFilePath = dlRes.filePath;
 
       if (!dlRes.success || !dlRes.filePath) {
-        if (dlCardMsgId && this.sock) {
+        if (useUiCards && dlCardMsgId && this.sock) {
           const errMarkup = generateFilmDownloadCardHtml({
             botName,
             title: movie.title,
@@ -4336,6 +4446,20 @@ ${langNote}
             title: "❌ DOWNLOAD FAILED",
             height: 215,
           }).catch(() => {});
+        } else if (!useUiCards && textStatusKey) {
+          await this.editPlainTextStatus(
+            jid,
+            textStatusKey,
+            this.formatDownloadStatusText({
+              icon: "🎬",
+              platform: "MOVIE",
+              title: movie.title,
+              status: "ERROR",
+              quality: mirrorQuality,
+              fileSize: mirrorSize,
+              detailLine: `⚠️ _හේතුව:_ ${dlRes.error || "Mirror unavailable"}`,
+            })
+          );
         }
         const fallbackLinks = allDownloads
           .slice(0, 3)
@@ -4360,8 +4484,8 @@ ${langNote}
         void this.sock.sendMessage(jid, { react: { text: "🚀", key: msg.key } }).catch(() => {});
       }
 
-      // Transition Card 2 to Uploading state in-place
-      if (dlCardMsgId) {
+      // Transition status to Uploading in-place
+      if (useUiCards && dlCardMsgId) {
         const upMarkup = generateFilmDownloadCardHtml({
           botName,
           title: movie.title,
@@ -4377,14 +4501,48 @@ ${langNote}
           title: "🚀 UPLOADING TO WHATSAPP",
           height: 215,
         }).catch(() => {});
+      } else if (!useUiCards && textStatusKey) {
+        void this.editPlainTextStatus(
+          jid,
+          textStatusKey,
+          this.formatDownloadStatusText({
+            icon: "🎬",
+            platform: "MOVIE",
+            title: movie.title,
+            status: "UPLOADING",
+            quality: dlRes.quality || mirrorQuality,
+            fileSize: sizeText,
+            progress: 10,
+            detailLine: "⚡ _WhatsApp වෙත චිත්‍රපටය Upload වෙමින් පවතී..._",
+          })
+        );
       }
 
       let lastUpEditAt = 0;
+      let lastUpPct = 0;
       let sentCompletedBanner = false;
 
       const sendCompletedCardNow = async () => {
         if (sentCompletedBanner || !this.sock) return;
         sentCompletedBanner = true;
+        if (!useUiCards) {
+          if (textStatusKey) {
+            await this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "🎬",
+                platform: "MOVIE",
+                title: movie.title,
+                status: "COMPLETED",
+                quality: dlRes.quality || mirrorQuality,
+                fileSize: sizeText,
+                detailLine: "👇 _චිත්‍රපටය පහතින් ලබාගන්න (Tap to Watch / Save)._",
+              })
+            );
+          }
+          return;
+        }
         const doneMarkup = generateFilmDownloadCardHtml({
           botName,
           title: movie.title,
@@ -4412,28 +4570,50 @@ ${langNote}
 
       const fastWaUpload = this.createFastWaUpload(
         (uploadedBytes, totalBytes, speedBps) => {
-          if (!dlCardMsgId || !this.sock) return;
+          if (!this.sock) return;
           const now = Date.now();
           const upPct = totalBytes > 0 ? Math.min(99, Math.max(2, Math.round((uploadedBytes / totalBytes) * 100))) : 50;
-          if (now - lastUpEditAt < 2500 && upPct < 99) return;
-          lastUpEditAt = now;
-
           const speedMb = (speedBps / (1024 * 1024)).toFixed(1);
-          const upMarkup = generateFilmDownloadCardHtml({
-            botName,
-            title: movie.title,
-            status: "UPLOADING",
-            progress: upPct,
-            quality: dlRes.quality || mirrorQuality,
-            fileSize: sizeText,
-            downloadedText: `${formatBytesSize(uploadedBytes)} / ${formatBytesSize(totalBytes)} (${speedMb} MB/s)`,
-            fileName,
-            height: 215,
-          });
-          void editHtmlApp(this.sock, jid, dlCardMsgId, upMarkup, {
-            title: `🚀 UPLOADING • ${upPct}%`,
-            height: 215,
-          }).catch(() => {});
+
+          if (useUiCards) {
+            if (!dlCardMsgId) return;
+            if (now - lastUpEditAt < 2500 && upPct < 99) return;
+            lastUpEditAt = now;
+
+            const upMarkup = generateFilmDownloadCardHtml({
+              botName,
+              title: movie.title,
+              status: "UPLOADING",
+              progress: upPct,
+              quality: dlRes.quality || mirrorQuality,
+              fileSize: sizeText,
+              downloadedText: `${formatBytesSize(uploadedBytes)} / ${formatBytesSize(totalBytes)} (${speedMb} MB/s)`,
+              fileName,
+              height: 215,
+            });
+            void editHtmlApp(this.sock, jid, dlCardMsgId, upMarkup, {
+              title: `🚀 UPLOADING • ${upPct}%`,
+              height: 215,
+            }).catch(() => {});
+          } else if (textStatusKey) {
+            if ((now - lastUpEditAt < 5000 || Math.abs(upPct - lastUpPct) < 20) && upPct < 99) return;
+            lastUpEditAt = now;
+            lastUpPct = upPct;
+            void this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "🎬",
+                platform: "MOVIE",
+                title: movie.title,
+                status: "UPLOADING",
+                quality: dlRes.quality || mirrorQuality,
+                fileSize: sizeText,
+                progress: upPct,
+                detailLine: `🚀 _Uploaded:_ ${formatBytesSize(uploadedBytes)} / ${formatBytesSize(totalBytes)} (${speedMb} MB/s)`,
+              })
+            );
+          }
         },
         sendCompletedCardNow
       );
@@ -4475,17 +4655,17 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
         ]);
       } catch (uploadErr: any) {
         uploadStream.destroy();
-        const errMarkup = generateFilmDownloadCardHtml({
-          botName,
-          title: movie.title,
-          status: "ERROR",
-          progress: 0,
-          quality: dlRes.quality || mirrorQuality,
-          fileSize: sizeText,
-          errorMessage: uploadErr?.message || "WhatsApp upload failed",
-          height: 215,
-        });
-        if (this.sock) {
+        if (useUiCards && this.sock) {
+          const errMarkup = generateFilmDownloadCardHtml({
+            botName,
+            title: movie.title,
+            status: "ERROR",
+            progress: 0,
+            quality: dlRes.quality || mirrorQuality,
+            fileSize: sizeText,
+            errorMessage: uploadErr?.message || "WhatsApp upload failed",
+            height: 215,
+          });
           if (dlCardMsgId) {
             await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, {
               title: "❌ WHATSAPP UPLOAD FAILED",
@@ -4498,6 +4678,20 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
               bypassDownload: true,
             }).catch(() => {});
           }
+        } else if (!useUiCards && textStatusKey) {
+          await this.editPlainTextStatus(
+            jid,
+            textStatusKey,
+            this.formatDownloadStatusText({
+              icon: "🎬",
+              platform: "MOVIE",
+              title: movie.title,
+              status: "ERROR",
+              quality: dlRes.quality || mirrorQuality,
+              fileSize: sizeText,
+              detailLine: `⚠️ _හේතුව:_ ${uploadErr?.message || "WhatsApp upload failed"}`,
+            })
+          );
         }
         const fallbackLinks = allDownloads
           .slice(0, 3)
@@ -4521,7 +4715,7 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
       this.addLog("SUCCESS", `🎬 Movie delivered to WhatsApp: ${fileName} (${sizeText}) -> ${jid}`);
     } catch (err: any) {
       this.addLog("ERROR", `Movie download/send error: ${err?.message || err}`);
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const errMarkup = generateFilmDownloadCardHtml({
           botName,
           title: cleanQuery,
@@ -4644,9 +4838,96 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
     if (forceClassic) return false;
     if (this.classicMenuUsers.has(jid)) return false;
     const device = this.detectClientDevice(msg);
-    // In-Chat HTML App cards render natively on official Android WhatsApp clients only.
-    // iOS, Web, Desktop, and unrecognized/third-party IDs automatically receive the Classic Menu.
-    return device === "android";
+    if (device !== "unknown") {
+      this.lastClientDevice.set(jid, device);
+      // In-Chat HTML App cards & animations render natively on official Android WhatsApp clients only.
+      // iOS, Web, Desktop automatically receive clean text-only messages.
+      return device === "android";
+    }
+    const remembered = this.lastClientDevice.get(jid);
+    if (remembered) {
+      return remembered === "android";
+    }
+    return false;
+  }
+
+  buildTextProgressBar(percent: number, width = 10): string {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    const filled = Math.round((clamped / 100) * width);
+    return `${"▓".repeat(filled)}${"░".repeat(Math.max(0, width - filled))} ${clamped}%`;
+  }
+
+  formatDownloadStatusText(opts: {
+    icon?: string;
+    platform?: string;
+    title: string;
+    status: "DOWNLOADING" | "UPLOADING" | "COMPLETED" | "ERROR";
+    quality?: string;
+    fileSize?: string;
+    progress?: number;
+    detailLine?: string;
+    footerNote?: string;
+  }): string {
+    const icon = opts.icon || "📥";
+    const platformTag = opts.platform ? ` • ${opts.platform.toUpperCase()}` : "";
+    const statusHeader =
+      opts.status === "DOWNLOADING"
+        ? `⏳ *DOWNLOADING${platformTag}...*`
+        : opts.status === "UPLOADING"
+          ? `🚀 *UPLOADING TO CHAT${platformTag}...*`
+          : opts.status === "COMPLETED"
+            ? `✅ *DOWNLOAD COMPLETED${platformTag}!*`
+            : `❌ *DOWNLOAD FAILED${platformTag}*`;
+
+    const lines: string[] = [
+      statusHeader,
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `${icon} *Title:* ${opts.title}`,
+    ];
+    if (opts.quality) lines.push(`🎞️ *Quality:* ${opts.quality}`);
+    if (opts.fileSize) lines.push(`📦 *Size:* ${opts.fileSize}`);
+    if (
+      (opts.status === "DOWNLOADING" || opts.status === "UPLOADING") &&
+      typeof opts.progress === "number" &&
+      opts.progress > 0
+    ) {
+      lines.push(`📊 *Progress:* ${this.buildTextProgressBar(opts.progress)}`);
+    }
+    if (opts.detailLine) {
+      lines.push("", opts.detailLine);
+    }
+    lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    if (opts.footerNote) {
+      lines.push(opts.footerNote);
+    } else if (opts.status === "COMPLETED") {
+      lines.push("> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*");
+    }
+    return lines.join("\n");
+  }
+
+  async sendPlainTextStatus(jid: string, quotedMsg: any, text: string): Promise<any | null> {
+    if (!this.sock) return null;
+    try {
+      const sent = await this.sock.sendMessage(jid, { text }, quotedMsg ? { quoted: quotedMsg } : undefined);
+      return sent?.key || null;
+    } catch {
+      try {
+        const sent = await this.sock.sendMessage(jid, { text });
+        return sent?.key || null;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  async editPlainTextStatus(jid: string, messageKey: any, text: string): Promise<boolean> {
+    if (!this.sock || !messageKey) return false;
+    try {
+      await this.sock.sendMessage(jid, { text, edit: messageKey });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async sendCategoryMenuCard(jid: string, msg: any, options: {
@@ -4690,7 +4971,7 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
       }
     }
 
-    // 2. Classic Fallback (Visual PNG Menu Card + Numbered/Copyable Command List) for iOS / Web / Desktop / .textmenu
+    // 2. Pure Clean Text Menu for iOS / Web / Desktop / .textmenu (no card images/animations)
     const commandLines = options.cards.map((c, i) => {
       const emoji = c.emoji || options.icon || "⚡";
       const name = c.name;
@@ -4702,7 +4983,7 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
     const cleanCaption = `👑 *${botName.toUpperCase()} • ${options.title.toUpperCase()}* 👑
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚡ *Total Commands:* ${options.cards.length} Commands
-🟢 *Status:* 24/7h Online • 📱 *Universal View*
+🟢 *Status:* 24/7h Online • 📱 *Clean Text View*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${commandLines}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4710,6 +4991,11 @@ ${commandLines}
 💡 *1-Tap Copy:* ඕනෑම Command එකක් Touch/Hold කර Copy කරගන්න.
 📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}
 > ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
+
+    if (!useHtmlUi) {
+      await this.reply(jid, msg, cleanCaption);
+      return;
+    }
 
     if (this.sock) {
       try {
@@ -4938,15 +5224,15 @@ ${commandLines}
       }
     }
 
-    // 2. Smart Auto-Detect Classic Fallback (Image Banner + Numbered Category Menu) for iOS / Web / Desktop / .textmenu
+    // 2. Smart Auto-Detect Clean Text Menu for iOS / Web / Desktop / .textmenu
     const detectedDevice = this.detectClientDevice(msg);
     this.classicMenuContext.set(jid, Date.now());
-    this.addLog("INFO", `📱 [CLASSIC MENU] Delivering Universal Menu (${detectedDevice}) to ${senderNumber}`);
+    this.addLog("INFO", `📱 [CLASSIC TEXT MENU] Delivering Clean Text Menu (${detectedDevice}) to ${senderNumber}`);
 
     const masterMenu = `👑 *${botName.toUpperCase()} • OFFICIAL MASTER MENU* 👑
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚡ *Uptime:* ${this.formatUptime()} • 👑 *Plan:* ${plan}
-📱 *Device Mode:* ${detectedDevice.toUpperCase()} (Universal View)
+📱 *Device Mode:* ${detectedDevice.toUpperCase()} (Clean Text View)
 ⌨️ *Prefix:* [ ${p} ] • 🇱🇰 *Language:* Sinhala / English
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📂 *CATEGORIES (අදාළ අංකය පමණක් Reply කරන්න):*
@@ -4969,9 +5255,13 @@ ${commandLines}
 • \`${p}ai <ප්‍රශ්නය>\` — YASHI AI සහායක
 
 💡 *Reply Tip:* *1* සිට *10* දක්වා අංකයක් යවා එම කොටසේ සියලු විධාන බලන්න.
-_(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}
 > ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
+
+    if (!useHtmlUi) {
+      await this.reply(jid, msg, masterMenu);
+      return;
+    }
 
     if (this.sock) {
       try {
@@ -5146,6 +5436,16 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
     const senderNumber = sender.split("@")[0].split(":")[0];
     const serverUrl = this.resolvePublicUrl();
 
+    const useUi = this.isUiMenuSupported(msg, jid);
+    if (!useUi) {
+      await this.reply(
+        jid,
+        msg,
+        `👑 *${botName.toUpperCase()} • MENU PREVIEW* 👑\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 *Device Mode:* Clean Text View (iOS / PC)\n💡 Use *${p}menu* to browse all commands cleanly in text.`
+      );
+      return;
+    }
+
     this.addLog("INFO", `🧪 [MENU TEST] Initiating Casileys Rich HTML & Interactive Neon Menu Test for ${senderNumber}`);
 
     // 1. CASILEYS RICH HTML API INSPECTION & EXECUTION
@@ -5255,32 +5555,34 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
     const botName = this.state.config.botName || 'YASHI HALLS MINI';
     const plan = `${this.state.config.plan?.toUpperCase() || 'MINI'} PLAN`;
 
-    try {
-      const markup = generateConnectedWelcomeHtmlApp({
-        botName,
-        userName: connectedOwner,
-        phoneNumber: senderNumber,
-        prefix: p,
-        plan,
-        channelUrl: WHATSAPP_CHANNEL_URL,
-        height: 620,
-      });
+    if (this.isUiMenuSupported(msg, jid) && this.sock) {
+      try {
+        const markup = generateConnectedWelcomeHtmlApp({
+          botName,
+          userName: connectedOwner,
+          phoneNumber: senderNumber,
+          prefix: p,
+          plan,
+          channelUrl: WHATSAPP_CHANNEL_URL,
+          height: 620,
+        });
 
-      const result = await sendHtmlApp(this.sock, jid, markup, {
-        title: `🎉 BOT CONNECTED • ${botName} 🎉`,
-        height: 620,
-        bypassDownload: true,
-      });
+        const result = await sendHtmlApp(this.sock, jid, markup, {
+          title: `🎉 BOT CONNECTED • ${botName} 🎉`,
+          height: 620,
+          bypassDownload: true,
+        });
 
-      if (result.success) {
-        this.addLog("SUCCESS", `🎉 [WELCOME CARD PREVIEW] Delivered interactive welcome card to ${senderNumber}`);
-        return;
+        if (result.success) {
+          this.addLog("SUCCESS", `🎉 [WELCOME CARD PREVIEW] Delivered interactive welcome card to ${senderNumber}`);
+          return;
+        }
+      } catch (err: any) {
+        this.addLog("WARN", `⚠️ [WELCOME CARD PREVIEW] Failed: ${err?.message || err}`);
       }
-    } catch (err: any) {
-      this.addLog("WARN", `⚠️ [WELCOME CARD PREVIEW] Failed: ${err?.message || err}`);
     }
 
-    // Fallback if card delivery failed
+    // Fallback / Clean Text message for iOS / PC
     const fallback = `*👑 ${botName} • CONNECTED 👑*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🟢 *Status:* ONLINE & ACTIVE 24/7 ✅
@@ -5288,7 +5590,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 📱 *Number:* +${senderNumber}
 🔣 *Prefix:* [ ${p} ]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Use *${p}menu* to open the interactive menu card.
+💡 Use *${p}menu* to view all commands.
 > ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
     await this.reply(jid, msg, fallback);
   }
@@ -5346,7 +5648,8 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
     const senderNumber = jid.split("@")[0].split(":")[0];
     const sub = (args || '').trim().toLowerCase();
 
-    this.addLog("INFO", `💬 Delivering 100% In-Chat Bubble Menu (.test1) to ${senderNumber} (sub: "${sub || 'all'}")`);
+    const useUi = this.isUiMenuSupported(msg, jid);
+    this.addLog("INFO", `💬 Delivering In-Chat Bubble Menu (.test1) to ${senderNumber} (sub: "${sub || 'all'}", ui: ${useUi})`);
 
     // Category 1: Downloads
     if (sub.includes('down') || sub.includes('media') || sub.includes('dl') || sub === '1') {
@@ -5372,7 +5675,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5419,7 +5722,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5467,7 +5770,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5510,7 +5813,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5555,7 +5858,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5601,7 +5904,7 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 💡 _ඕනෑම Command එකක් Copy කර Send කරන්න._
 👑 *${botName.toUpperCase()}* • POWERED BY YASHI HALLS`;
 
-      if (this.sock) {
+      if (useUi && this.sock) {
         try {
           const logoBuffer = await this.getLogoBuffer().catch(() => null);
           await sendButtons(
@@ -5682,13 +5985,13 @@ _(Android UI Menu සඳහා \`${p}ui on\` යවන්න)_
 │ • \`${p}public\` • \`${p}private\` • \`${p}restart\`
 ╰──────────────────────────
 
-💡 _පහත බොත්තම් මඟින් විධාන සෘජුවම Chat එක ඇතුළෙන්ම ක්‍රියාත්මක කරන්න:_
+💡 _ඕනෑම Command එකක් Copy කර Send කරන්න:_
 
 👑 *YASHI HALLS MINI*
 MINI PLAN • WHATSAPP ASSISTANT
 ⚡ POWERED BY YASHI HALLS ⚡`;
 
-    if (this.sock) {
+    if (useUi && this.sock) {
       try {
         const logoBuffer = await this.getLogoBuffer().catch(() => null);
 
@@ -5737,7 +6040,21 @@ MINI PLAN • WHATSAPP ASSISTANT
     const botName = this.state.config.botName || "YASHI HALLS MINI";
     const senderNumber = jid.split("@")[0].split(":")[0];
 
-    this.addLog("INFO", `🎠 Delivering Interactive Carousel Card Slider (.carousel) to ${senderNumber}`);
+    const useUi = this.isUiMenuSupported(msg, jid);
+    this.addLog("INFO", `🎠 Delivering Menu (.carousel, ui: ${useUi}) to ${senderNumber}`);
+
+    const fallbackText = `👑 *${botName} • COMMAND OVERVIEW* 👑\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}\n\n📌 *MAIN CATEGORIES:*
+• *${p}song* / *${p}video* - Download Music & HD Video
+• *${p}ai* / *${p}imagine* - AI Assistant & Art
+• *${p}film* / *${p}sub* - Direct Movies & Sinhala Subtitles
+• *${p}tagall* / *${p}mute* - Group Administration
+• *${p}bill* / *${p}gold* - Daily Utilities & Rates
+• *${p}ping* / *${p}alive* - System Speed & Health\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
+
+    if (!useUi) {
+      await this.reply(jid, msg, fallbackText);
+      return;
+    }
 
     if (this.sock) {
       try {
@@ -5858,15 +6175,6 @@ MINI PLAN • WHATSAPP ASSISTANT
       }
     }
 
-    // High-quality interactive buttons fallback if client does not support carousel
-    const fallbackText = `👑 *${botName} • CAROUSEL CARD SLIDER* 👑\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}\n\n📌 *MAIN CATEGORIES:*
-• *${p}song* / *${p}video* - Download Music & HD Video
-• *${p}ai* / *${p}imagine* - AI Assistant & Art
-• *${p}film* / *${p}sub* - Direct Movies & Sinhala Subtitles
-• *${p}tagall* / *${p}mute* - Group Administration
-• *${p}bill* / *${p}gold* - Daily Utilities & Rates
-• *${p}ping* / *${p}alive* - System Speed & Health\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡL L S*`;
-
     await sendButtons(
       this.sock,
       jid,
@@ -5929,6 +6237,16 @@ MINI PLAN • WHATSAPP ASSISTANT
     } else if (query.includes("system") || query.includes("bot")) {
       title = "SYSTEM & BOT MENU";
       cards = SYSTEM_CATALOG;
+    }
+
+    if (!this.isUiMenuSupported(msg, jid)) {
+      const cmdLines = cards.slice(0, 20).map((c, idx) => `${String(idx + 1).padStart(2, "0")}. *${c.name}:* \`${c.capsule}\``).join("\n");
+      await this.reply(
+        jid,
+        msg,
+        `👑 *${botName} • ${title}* 👑\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 *Clean Text View (iOS / PC)*\n\n${cmdLines}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nType *${p}menu* to view all categories.`
+      );
+      return;
     }
 
     // 1. Generate Cyber Neon Purple & Black Interactive Menu HTML Markup
@@ -6192,16 +6510,19 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
     this.addLog("INFO", `Audio stream requested for: "${cleanQuery}" from ${jid}`);
     await this.sock?.sendMessage(jid, { react: { text: "🎵", key: msg.key } }).catch(() => {});
 
-    // Quick cover & title lookup so Card 1 shows full-width artwork/banner (NO quality ask)
+    // Quick cover & title lookup
+    const useUiCards = this.isUiMenuSupported(msg, jid);
     const preview = await previewSongInfo(cleanQuery).catch(() => ({ title: cleanQuery, thumbnailUrl: undefined }));
     const songTitle = preview?.title || cleanQuery;
-    const bannerSrc =
-      (preview?.thumbnailUrl
-        ? await fetchPosterAsDataUri(preview.thumbnailUrl).catch(() => "")
-        : "") || buildPlatformBannerDataUri("SONG", songTitle);
 
     let dlCardMsgId: string | null = null;
-    if (this.sock) {
+    let textStatusKey: any = null;
+
+    if (useUiCards && this.sock) {
+      const bannerSrc =
+        (preview?.thumbnailUrl
+          ? await fetchPosterAsDataUri(preview.thumbnailUrl).catch(() => "")
+          : "") || buildPlatformBannerDataUri("SONG", songTitle);
       try {
         const detailsMarkup = generateFilmDetailsCardHtml({
           botName,
@@ -6251,7 +6572,20 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
       }
     }
 
-    if (!dlCardMsgId) {
+    if (!useUiCards) {
+      textStatusKey = await this.sendPlainTextStatus(
+        jid,
+        msg,
+        this.formatDownloadStatusText({
+          icon: "🎵",
+          platform: "MUSIC",
+          title: songTitle,
+          status: "DOWNLOADING",
+          quality: "320kbps MP3",
+          detailLine: "⚡ _ගීතය බාගත කරමින් පවතී... කරුණාකර මොහොතක් රැඳී සිටින්න._",
+        })
+      );
+    } else if (!dlCardMsgId) {
       await this.reply(jid, msg, `⏳ *${songTitle}* — ගීතය බාගත කරමින් පවතී...`);
     }
 
@@ -6261,7 +6595,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
         const fileSizeMb = (audioResult.buffer.length / 1024 / 1024).toFixed(2);
         const resolvedTitle = audioResult.title || songTitle;
 
-        if (dlCardMsgId && this.sock) {
+        if (useUiCards && dlCardMsgId && this.sock) {
           const upMarkup = generateFilmDownloadCardHtml({
             botName,
             title: resolvedTitle,
@@ -6280,6 +6614,20 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
             title: "🚀 SENDING MP3",
             height: 215,
           }).catch(() => {});
+        } else if (!useUiCards && textStatusKey) {
+          await this.editPlainTextStatus(
+            jid,
+            textStatusKey,
+            this.formatDownloadStatusText({
+              icon: "🎵",
+              platform: "MUSIC",
+              title: resolvedTitle,
+              status: "UPLOADING",
+              quality: audioResult.bitrate || "320kbps MP3",
+              fileSize: `${fileSizeMb} MB`,
+              detailLine: "⚡ _ගීතය WhatsApp චැට් එකට එවමින් පවතී..._",
+            })
+          );
         }
 
         const isSent = await this.sendAudio(
@@ -6293,7 +6641,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
         );
 
         if (isSent) {
-          if (dlCardMsgId && this.sock) {
+          if (useUiCards && dlCardMsgId && this.sock) {
             const doneMarkup = generateFilmDownloadCardHtml({
               botName,
               title: resolvedTitle,
@@ -6314,12 +6662,26 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
             }).catch(() => {});
           }
           await this.sock?.sendMessage(jid, { react: { text: "✅", key: msg.key } }).catch(() => {});
-          if (!dlCardMsgId) {
+          if (!useUiCards) {
+            const doneText = this.formatDownloadStatusText({
+              icon: "🎶",
+              platform: "MUSIC",
+              title: resolvedTitle,
+              status: "COMPLETED",
+              quality: audioResult.bitrate || "320kbps MP3",
+              fileSize: `${fileSizeMb} MB`,
+              detailLine: `⏱️ *Duration:* ${audioResult.duration || "03:45"}\n👇 _පහතින් ඇති Audio ගොනුව Play / Download කරන්න._`,
+            });
+            const edited = textStatusKey ? await this.editPlainTextStatus(jid, textStatusKey, doneText) : false;
+            if (!edited) {
+              await this.reply(jid, msg, doneText);
+            }
+          } else if (!dlCardMsgId) {
             const response = `🎶 *${resolvedTitle}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏱️ *Duration:* ${audioResult.duration || "03:45"}\n🔊 *Bitrate:* ${audioResult.bitrate || "320kbps MP3"}\n📦 *Size:* ${fileSizeMb} MB\n⚡ *Speed:* Ultra Fast Direct Delivery!\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`.trim();
             await this.reply(jid, msg, response);
           }
         } else {
-          if (dlCardMsgId && this.sock) {
+          if (useUiCards && dlCardMsgId && this.sock) {
             const errMarkup = generateFilmDownloadCardHtml({
               botName,
               title: resolvedTitle,
@@ -6331,12 +6693,25 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
               height: 215,
             });
             await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ SEND FAILED", height: 215 }).catch(() => {});
+          } else if (!useUiCards && textStatusKey) {
+            await this.editPlainTextStatus(
+              jid,
+              textStatusKey,
+              this.formatDownloadStatusText({
+                icon: "🎵",
+                platform: "MUSIC",
+                title: resolvedTitle,
+                status: "ERROR",
+                fileSize: `${fileSizeMb} MB`,
+                detailLine: "⚠️ _WhatsApp වෙත ගීතය යැවීම අසාර්ථක විය. කරුණාකර නැවත උත්සාහ කරන්න._",
+              })
+            );
           }
           await this.reply(jid, msg, `⚠️ Audio buffer prepared, but failed to transmit to WhatsApp chat. Please retry.`);
         }
       } else {
         this.addLog("WARN", `Audio download failed for "${cleanQuery}": ${audioResult.error}`);
-        if (dlCardMsgId && this.sock) {
+        if (useUiCards && dlCardMsgId && this.sock) {
           const errMarkup = generateFilmDownloadCardHtml({
             botName,
             title: songTitle,
@@ -6349,12 +6724,22 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           });
           await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ DOWNLOAD FAILED", height: 215 }).catch(() => {});
         } else {
-          await this.reply(jid, msg, `❌ *Audio Download Failed*\n${audioResult.error || `Could not find an available audio stream for "${cleanQuery}". Please check the spelling or try another song title.`}`);
+          const failText = this.formatDownloadStatusText({
+            icon: "🎵",
+            platform: "MUSIC",
+            title: songTitle,
+            status: "ERROR",
+            detailLine: `⚠️ ${audioResult.error || `Could not find an available audio stream for "${cleanQuery}".`}`,
+          });
+          const edited = !useUiCards && textStatusKey ? await this.editPlainTextStatus(jid, textStatusKey, failText) : false;
+          if (!edited) {
+            await this.reply(jid, msg, failText);
+          }
         }
       }
     } catch (err: any) {
       this.addLog("ERROR", `cmdSong error: ${err?.message || err}`);
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const errMarkup = generateFilmDownloadCardHtml({
           botName,
           title: songTitle,
@@ -6366,6 +6751,18 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           height: 215,
         });
         await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ DOWNLOAD FAILED", height: 215 }).catch(() => {});
+      } else if (!useUiCards && textStatusKey) {
+        await this.editPlainTextStatus(
+          jid,
+          textStatusKey,
+          this.formatDownloadStatusText({
+            icon: "🎵",
+            platform: "MUSIC",
+            title: songTitle,
+            status: "ERROR",
+            detailLine: `⚠️ ${err?.message || "Failed to process audio request"}`,
+          })
+        );
       }
       await this.reply(jid, msg, `⚠️ *Audio Engine Error:* ${err?.message || "Failed to process audio request"}`);
     }
@@ -6382,6 +6779,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
     const botName = this.state.config.botName || "YASHI HALLS";
     const { cleanQuery, quality } = extractMediaQualityFlag(rawArgs || "");
     const upperPlatform = platformLabel.toUpperCase();
+    const useUiCards = this.isUiMenuSupported(msg, jid);
 
     const platformIcon =
       upperPlatform.includes("TIKTOK")
@@ -6414,7 +6812,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
 
     this.state.quotas.mediaRequestsUsed++;
 
-    // STEP 1: No quality selected yet -> Send Card 1 (Full-Width Platform Banner/Thumbnail + Details + 2 Copy Buttons)
+    // STEP 1: No quality selected yet -> Card 1 on Android; Clean Text Choice on iOS / PC
     if (!quality) {
       await this.sock?.sendMessage(jid, { react: { text: platformIcon === "𝕏" ? "⚡" : platformIcon, key: msg.key } }).catch(() => {});
       const preview = await previewMediaForCard(cleanQuery, platformLabel).catch(() => ({
@@ -6422,10 +6820,6 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
         platform: platformLabel,
       }));
       const displayTitle = preview.title || `${platformLabel} Video`;
-      const bannerSrc =
-        (preview.thumbnailUrl
-          ? await fetchPosterAsDataUri(preview.thumbnailUrl).catch(() => "")
-          : "") || buildPlatformBannerDataUri(platformLabel, displayTitle);
 
       const safeCmdQuery = cleanQuery.length > 90 ? cleanQuery : displayTitle;
       const cmdQueryArg = /^https?:\/\//i.test(cleanQuery)
@@ -6459,7 +6853,11 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
       });
 
       let sentDetailsCard = false;
-      if (this.sock) {
+      if (useUiCards && this.sock) {
+        const bannerSrc =
+          (preview.thumbnailUrl
+            ? await fetchPosterAsDataUri(preview.thumbnailUrl).catch(() => "")
+            : "") || buildPlatformBannerDataUri(platformLabel, displayTitle);
         try {
           const detailsMarkup = generateFilmDetailsCardHtml({
             botName,
@@ -6492,13 +6890,13 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
         await this.reply(
           jid,
           msg,
-          `${platformIcon} *${displayTitle}*\n⏱️ *Duration:* ${preview.duration || "HD Video"} | 👤 *Channel:* ${preview.author || platformLabel}\n\n👇 *කුමන Quality එකෙන්ද අවශ්‍ය? පහත Command එකක් Copy කර එවන්න (හෝ 1 / 2 Reply කරන්න):*\n\n1️⃣ \`${opt1Cmd}\` _(SD 480p)_\n2️⃣ \`${opt2Cmd}\` _(HD 720p)_`
+          `${platformIcon} *${displayTitle}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏱️ *Duration:* ${preview.duration || "HD Video"} | 👤 *Channel:* ${preview.author || platformLabel}\n\n👇 *කුමන Quality එකෙන්ද අවශ්‍ය? පහත අංකය (1 / 2) Reply කරන්න හෝ Command එක Copy කර එවන්න:*\n\n1️⃣ \`${opt1Cmd}\` _(SD 480p)_\n2️⃣ \`${opt2Cmd}\` _(HD 720p)_\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`
         );
       }
       return;
     }
 
-    // STEP 2: Quality Selected -> Send Downloading Card (Card 2) & Edit Same Card In-Place to COMPLETED
+    // STEP 2: Quality Selected -> Card 2 on Android; Clean Text Status on iOS / PC
     const prevChoice = this.pendingMediaChoices.get(jid);
     const cardDisplayTitle = prevChoice?.title || cleanQuery;
     this.pendingMediaChoices.delete(jid);
@@ -6506,7 +6904,9 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
 
     const qualityBadge = quality === "mp3" ? "320kbps MP3" : quality === "720p" ? "HD 720p MP4" : "SD 480p MP4";
     let dlCardMsgId: string | null = null;
-    if (this.sock) {
+    let textStatusKey: any = null;
+
+    if (useUiCards && this.sock) {
       try {
         const initDlMarkup = generateFilmDownloadCardHtml({
           botName,
@@ -6533,14 +6933,27 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
       } catch {}
     }
 
-    if (!dlCardMsgId) {
+    if (!useUiCards) {
+      textStatusKey = await this.sendPlainTextStatus(
+        jid,
+        msg,
+        this.formatDownloadStatusText({
+          icon: platformIcon,
+          platform: upperPlatform,
+          title: cardDisplayTitle,
+          status: "DOWNLOADING",
+          quality: qualityBadge,
+          detailLine: "⚡ _වීඩියෝව Download වෙමින් පවතී... කරුණාකර මොහොතක් රැඳී සිටින්න._",
+        })
+      );
+    } else if (!dlCardMsgId) {
       await this.reply(jid, msg, `⏳ *${platformLabel}* (${qualityBadge}) Download වෙමින් පවතී...`).catch(() => {});
     }
 
     try {
       const vidRes = await resolveVideo(cleanQuery, quality);
       if (!vidRes.success || (!vidRes.buffer && !vidRes.videoUrl)) {
-        if (dlCardMsgId && this.sock) {
+        if (useUiCards && dlCardMsgId && this.sock) {
           const errMarkup = generateFilmDownloadCardHtml({
             botName,
             title: cleanQuery,
@@ -6554,7 +6967,18 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           });
           await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ DOWNLOAD FAILED", height: 215 }).catch(() => {});
         } else {
-          await this.reply(jid, msg, `❌ *${upperPlatform} Download Failed:*\n${vidRes.error || "Link unavailable"}`);
+          const failText = this.formatDownloadStatusText({
+            icon: platformIcon,
+            platform: upperPlatform,
+            title: cardDisplayTitle,
+            status: "ERROR",
+            quality: qualityBadge,
+            detailLine: `⚠️ ${vidRes.error || "Video stream unavailable right now."}`,
+          });
+          const edited = !useUiCards && textStatusKey ? await this.editPlainTextStatus(jid, textStatusKey, failText) : false;
+          if (!edited) {
+            await this.reply(jid, msg, failText);
+          }
         }
         return;
       }
@@ -6580,7 +7004,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
 
       if (finalBuf && finalBuf.length > 0 && this.sock) {
         const computedSizeStr = vidRes.fileSizeStr || `${(finalBuf.length / (1024 * 1024)).toFixed(1)} MB`;
-        if (dlCardMsgId) {
+        if (useUiCards && dlCardMsgId) {
           const upMarkup = generateFilmDownloadCardHtml({
             botName,
             title: finalTitle,
@@ -6596,6 +7020,20 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
             height: 215,
           });
           await editHtmlApp(this.sock, jid, dlCardMsgId, upMarkup, { title: "🚀 UPLOADING TO CHAT", height: 215 }).catch(() => {});
+        } else if (!useUiCards && textStatusKey) {
+          await this.editPlainTextStatus(
+            jid,
+            textStatusKey,
+            this.formatDownloadStatusText({
+              icon: platformIcon,
+              platform: upperPlatform,
+              title: finalTitle,
+              status: "UPLOADING",
+              quality: finalQuality,
+              fileSize: computedSizeStr,
+              detailLine: "⚡ _WhatsApp චැට් එකට ගොනුව එවමින් පවතී..._",
+            })
+          );
         }
 
         if (quality === "mp3") {
@@ -6633,8 +7071,8 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           }
         }
 
-        // Update the SAME Downloading Card in-place to COMPLETED
-        if (dlCardMsgId) {
+        // Update the SAME Downloading Card / Text Status in-place to COMPLETED
+        if (useUiCards && dlCardMsgId) {
           const doneMarkup = generateFilmDownloadCardHtml({
             botName,
             title: finalTitle,
@@ -6650,6 +7088,20 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
             height: 215,
           });
           await editHtmlApp(this.sock, jid, dlCardMsgId, doneMarkup, { title: "✅ DOWNLOAD COMPLETED", height: 215 }).catch(() => {});
+        } else if (!useUiCards && textStatusKey) {
+          await this.editPlainTextStatus(
+            jid,
+            textStatusKey,
+            this.formatDownloadStatusText({
+              icon: platformIcon,
+              platform: upperPlatform,
+              title: finalTitle,
+              status: "COMPLETED",
+              quality: finalQuality,
+              fileSize: computedSizeStr,
+              detailLine: "👇 _වීඩියෝව පහතින් ලබාගන්න (Tap to Watch / Save)._",
+            })
+          );
         }
 
         await this.sock.sendMessage(jid, { react: { text: "✅", key: msg.key } }).catch(() => {});
@@ -6658,7 +7110,7 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
       }
 
       // If still URL stream without buffer, mark card completed & send watch/audio instructions
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const doneMarkup = generateFilmDownloadCardHtml({
           botName,
           title: finalTitle,
@@ -6673,13 +7125,27 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           height: 215,
         });
         await editHtmlApp(this.sock, jid, dlCardMsgId, doneMarkup, { title: "✅ READY", height: 215 }).catch(() => {});
+      } else if (!useUiCards && textStatusKey) {
+        await this.editPlainTextStatus(
+          jid,
+          textStatusKey,
+          this.formatDownloadStatusText({
+            icon: platformIcon,
+            platform: upperPlatform,
+            title: finalTitle,
+            status: "COMPLETED",
+            quality: finalQuality,
+            fileSize: finalSize,
+            detailLine: "👇 _Direct Download සබැඳිය පහතින් ලබාදී ඇත._",
+          })
+        );
       }
 
       const fallbackCard = `🎬 *${finalTitle.toUpperCase()}* 🚀\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏱️ *Duration:* ${vidRes.duration || "Full Length"}\n👤 *Channel:* ${vidRes.author || platformLabel}\n📺 *Quality:* ${finalQuality}\n🔗 *Direct Link:* ${vidRes.sourceUrl || vidRes.videoUrl}\n\n💡 *AUDIO (MP3):* 👉 *${p}song ${finalTitle}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`.trim();
       await this.reply(jid, msg, fallbackCard);
     } catch (err: any) {
       this.addLog("ERROR", `${platformLabel} error: ${err?.message || err}`);
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const errMarkup = generateFilmDownloadCardHtml({
           botName,
           title: cleanQuery,
@@ -6691,6 +7157,18 @@ ${mode==="public"?"Everyone can now use bot commands.":"Only owner commands are 
           height: 215,
         });
         await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ DOWNLOAD FAILED", height: 215 }).catch(() => {});
+      } else if (!useUiCards && textStatusKey) {
+        await this.editPlainTextStatus(
+          jid,
+          textStatusKey,
+          this.formatDownloadStatusText({
+            icon: platformIcon,
+            platform: upperPlatform,
+            title: cardDisplayTitle,
+            status: "ERROR",
+            detailLine: `⚠️ ${err?.message || "Failed to process video"}`,
+          })
+        );
       }
       await this.reply(jid, msg, `⚠️ *${upperPlatform} Engine Error:* ${err?.message || "Failed to process video"}`);
     }
@@ -6934,8 +7412,10 @@ ${result.text}`)}
     this.state.quotas.mediaRequestsUsed++;
     await this.sock?.sendMessage(jid, { react: { text: "⚡", key: msg.key } }).catch(() => {});
 
+    const useUiCards = this.isUiMenuSupported(msg, jid);
     let dlCardMsgId: string | null = null;
-    if (this.sock) {
+    let textStatusKey: any = null;
+    if (useUiCards && this.sock) {
       try {
         const apkBanner = buildPlatformBannerDataUri("APK", `${appQuery} • Official Android APK`);
         const detailsMarkup = generateFilmDetailsCardHtml({
@@ -6982,12 +7462,25 @@ ${result.text}`)}
           dlCardMsgId = cardRes.messageId;
         }
       } catch {}
+    } else if (!useUiCards) {
+      textStatusKey = await this.sendPlainTextStatus(
+        jid,
+        msg,
+        this.formatDownloadStatusText({
+          icon: "📱",
+          platform: "APK",
+          title: `${appQuery} (Official APK)`,
+          status: "DOWNLOADING",
+          quality: "Latest APK",
+          detailLine: "⚡ _APK පැකේජය සකසමින් පවතී..._",
+        })
+      );
     }
 
     try {
       const directApkUrl = `https://d.apkpure.com/b/APK/${encodeURIComponent(appQuery.toLowerCase().replace(/\s+/g, "."))}?version=latest`;
 
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const doneMarkup = generateFilmDownloadCardHtml({
           botName,
           title: `${appQuery} Official APK`,
@@ -7006,10 +7499,17 @@ ${result.text}`)}
       }
 
       const caption = `📱 *${appQuery.toUpperCase()} APK PACKAGE DOWNLOAD* 🚀\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📦 *Package:* ${appQuery}\n🛡️ *Security:* VirusTotal & PlayProtect Verified\n⚡ *Status:* Ready for 1-Tap Installation\n🔗 *Direct Download:* ${directApkUrl}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`.trim();
-      await this.reply(jid, msg, caption);
+      if (!useUiCards && textStatusKey) {
+        const edited = await this.editPlainTextStatus(jid, textStatusKey, caption);
+        if (!edited) {
+          await this.reply(jid, msg, caption);
+        }
+      } else {
+        await this.reply(jid, msg, caption);
+      }
       await this.sock?.sendMessage(jid, { react: { text: "✅", key: msg.key } }).catch(() => {});
     } catch (err: any) {
-      if (dlCardMsgId && this.sock) {
+      if (useUiCards && dlCardMsgId && this.sock) {
         const errMarkup = generateFilmDownloadCardHtml({
           botName,
           title: appQuery,
@@ -7022,7 +7522,11 @@ ${result.text}`)}
         });
         await editHtmlApp(this.sock, jid, dlCardMsgId, errMarkup, { title: "❌ APK FAILED", height: 215 }).catch(() => {});
       } else {
-        await this.reply(jid, msg, `❌ APK package search failed for "${appQuery}".`);
+        const failText = `❌ APK package search failed for "${appQuery}".`;
+        const edited = !useUiCards && textStatusKey ? await this.editPlainTextStatus(jid, textStatusKey, failText) : false;
+        if (!edited) {
+          await this.reply(jid, msg, failText);
+        }
       }
     }
   }
@@ -7856,6 +8360,9 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
       },
       sendHtmlAppCard: async (targetJid: string, htmlMarkup: string, opts: { title: string; height: number }): Promise<string | null> => {
         if (!this.sock || !this.state.isOnline || !targetJid) return null;
+        if (this.classicMenuUsers.has(targetJid)) return null;
+        const knownDevice = this.lastClientDevice.get(targetJid);
+        if (knownDevice && knownDevice !== "android") return null;
         try {
           const res = await sendHtmlApp(this.sock, targetJid, htmlMarkup, {
             title: opts.title,
@@ -8832,33 +9339,35 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
             return;
           }
 
-          // 1. Send Animated Cyber/Neon Payment Processing HTML App Card immediately!
+          // 1. Send Animated Cyber/Neon Payment Processing HTML App Card ONLY on Android
           let procCardMsgId: string | null = null;
           const pkgLabel = pendingOrder.botQuantity
             ? `${pendingOrder.botQuantity} BOTS`
             : pendingOrder.packageDays || pendingOrder.productName;
-          try {
-            const scanningHtml = generatePaymentProcessingHtml({
-              brandName,
-              orderId: pendingOrder.id,
-              stage: "SCANNING",
-              packageLabel: pkgLabel,
-              expectedAmountLkr: pendingOrder.amountLkr,
-              headline: "Scanning Payment Receipt...",
-              subline: "AI Receipt Scanner & Bank Verification Engine මඟින් ඔබගේ Receipt එක පරීක්ෂා කරමින් පවතී...",
-              height: 315,
-            });
-            const cardRes = await sendHtmlApp(this.sock, jid, scanningHtml, {
-              title: `🔍 PROCESSING • ${pendingOrder.id}`,
-              height: 315,
-              quoted: msg || undefined,
-            });
-            if (cardRes?.messageId) {
-              procCardMsgId = cardRes.messageId;
-              this.trackSentMessageId({ key: { id: cardRes.messageId } });
+          if (this.isUiMenuSupported(msg, jid)) {
+            try {
+              const scanningHtml = generatePaymentProcessingHtml({
+                brandName,
+                orderId: pendingOrder.id,
+                stage: "SCANNING",
+                packageLabel: pkgLabel,
+                expectedAmountLkr: pendingOrder.amountLkr,
+                headline: "Scanning Payment Receipt...",
+                subline: "AI Receipt Scanner & Bank Verification Engine මඟින් ඔබගේ Receipt එක පරීක්ෂා කරමින් පවතී...",
+                height: 315,
+              });
+              const cardRes = await sendHtmlApp(this.sock, jid, scanningHtml, {
+                title: `🔍 PROCESSING • ${pendingOrder.id}`,
+                height: 315,
+                quoted: msg || undefined,
+              });
+              if (cardRes?.messageId) {
+                procCardMsgId = cardRes.messageId;
+                this.trackSentMessageId({ key: { id: cardRes.messageId } });
+              }
+            } catch {
+              procCardMsgId = null;
             }
-          } catch {
-            procCardMsgId = null;
           }
 
           if (!procCardMsgId) {
