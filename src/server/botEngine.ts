@@ -4851,6 +4851,50 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
     return false;
   }
 
+  toUnicodeBold(text: string): string {
+    return String(text || "").replace(/[A-Za-z0-9]/g, (ch) => {
+      const code = ch.charCodeAt(0);
+      if (code >= 65 && code <= 90) return String.fromCodePoint(0x1d400 + (code - 65));
+      if (code >= 97 && code <= 122) return String.fromCodePoint(0x1d41a + (code - 97));
+      if (code >= 48 && code <= 57) return String.fromCodePoint(0x1d7ce + (code - 48));
+      return ch;
+    });
+  }
+
+  formatKeycapNum(num: number): string {
+    const keycaps = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"];
+    if (num === 10) return "🔟";
+    if (num >= 1 && num <= 9) return keycaps[num];
+    return String(num)
+      .split("")
+      .map((d) => keycaps[Number(d)] ?? d)
+      .join("");
+  }
+
+  getSriLankaDateTime(): { dateStr: string; timeStr: string } {
+    const now = new Date();
+    try {
+      const dateStr = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Colombo",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      }).format(now);
+      const timeStr = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Colombo",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }).format(now);
+      return { dateStr, timeStr };
+    } catch {
+      return {
+        dateStr: now.toISOString().slice(0, 10),
+        timeStr: now.toTimeString().slice(0, 5),
+      };
+    }
+  }
+
   buildTextProgressBar(percent: number, width = 10): string {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
     const filled = Math.round((clamped / 100) * width);
@@ -4869,38 +4913,40 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
     footerNote?: string;
   }): string {
     const icon = opts.icon || "📥";
+    const botName = (this.state.config.botName || "YASHI HALLS MINI").toUpperCase();
     const platformTag = opts.platform ? ` • ${opts.platform.toUpperCase()}` : "";
     const statusHeader =
       opts.status === "DOWNLOADING"
-        ? `⏳ *DOWNLOADING${platformTag}...*`
+        ? `╭─── ✦ ⏳ ${this.toUnicodeBold(`DOWNLOADING${platformTag}`)} ✦ ───╮`
         : opts.status === "UPLOADING"
-          ? `🚀 *UPLOADING TO CHAT${platformTag}...*`
+          ? `╭─── ✦ 🚀 ${this.toUnicodeBold(`UPLOADING${platformTag}`)} ✦ ───╮`
           : opts.status === "COMPLETED"
-            ? `✅ *DOWNLOAD COMPLETED${platformTag}!*`
-            : `❌ *DOWNLOAD FAILED${platformTag}*`;
+            ? `╭─── ✦ ✅ ${this.toUnicodeBold(`COMPLETED${platformTag}`)} ✦ ───╮`
+            : `╭─── ✦ ❌ ${this.toUnicodeBold(`FAILED${platformTag}`)} ✦ ───╮`;
 
     const lines: string[] = [
       statusHeader,
-      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-      `${icon} *Title:* ${opts.title}`,
+      `│ ${icon} *Title:* ${opts.title}`,
     ];
-    if (opts.quality) lines.push(`🎞️ *Quality:* ${opts.quality}`);
-    if (opts.fileSize) lines.push(`📦 *Size:* ${opts.fileSize}`);
+    if (opts.quality) lines.push(`│ 🎞️ *Quality:* ${opts.quality}`);
+    if (opts.fileSize) lines.push(`│ 📦 *Size:* ${opts.fileSize}`);
     if (
       (opts.status === "DOWNLOADING" || opts.status === "UPLOADING") &&
       typeof opts.progress === "number" &&
       opts.progress > 0
     ) {
-      lines.push(`📊 *Progress:* ${this.buildTextProgressBar(opts.progress)}`);
+      lines.push(`│ 📊 *Progress:* ${this.buildTextProgressBar(opts.progress)}`);
     }
     if (opts.detailLine) {
-      lines.push("", opts.detailLine);
+      for (const line of String(opts.detailLine).split("\n")) {
+        lines.push(line ? `│ ${line}` : "│");
+      }
     }
-    lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    lines.push("╰────────────────────────────╯");
     if (opts.footerNote) {
       lines.push(opts.footerNote);
     } else if (opts.status === "COMPLETED") {
-      lines.push("> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*");
+      lines.push(`> © ${this.toUnicodeBold(botName)} • 𝟐𝟒/𝟕 𝐄𝐍𝐆𝐈𝐍𝐄`);
     }
     return lines.join("\n");
   }
@@ -4972,25 +5018,29 @@ ${movie.hasSinhalaSub ? "📝 *Sinhala Subtitles Included*" : ""}
     }
 
     // 2. Pure Clean Text Menu for iOS / Web / Desktop / .textmenu (no card images/animations)
+    if (!useHtmlUi) {
+      this.classicMenuContext.set(jid, Date.now());
+    }
+    const styledBotName = this.toUnicodeBold(botName.toUpperCase());
+    const styledTitle = this.toUnicodeBold(options.title.toUpperCase());
     const commandLines = options.cards.map((c, i) => {
       const emoji = c.emoji || options.icon || "⚡";
-      const name = c.name;
       const cmdCapsule = c.capsule.startsWith(p) ? c.capsule : `${p}${c.capsule}`;
-      const num = String(i + 1).padStart(2, '0');
-      return `│ ${num}. ${emoji} *${name}:* \`${cmdCapsule}\``;
-    }).join('\n');
+      const numKeycap = this.formatKeycapNum(i + 1);
+      const descLine = c.desc ? `\n       └ _${c.desc}_` : "";
+      return `  ${numKeycap}  ${emoji}  \`${cmdCapsule}\`${descLine}`;
+    }).join('\n\n');
 
-    const cleanCaption = `👑 *${botName.toUpperCase()} • ${options.title.toUpperCase()}* 👑
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ *Total Commands:* ${options.cards.length} Commands
-🟢 *Status:* 24/7h Online • 📱 *Clean Text View*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    const cleanCaption = `╭─── ✦ ${options.icon} ${styledTitle} ✦ ───╮
+│ ⚡ *${options.cards.length} Commands* • *Clean Text View*
+╰──────────────────────────────╯
+
 ${commandLines}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-↩️ *ප්‍රධාන මෙනුවට:* *0* හෝ \`${p}menu\` යවන්න.
-💡 *1-Tap Copy:* ඕනෑම Command එකක් Touch/Hold කර Copy කරගන්න.
-📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}
-> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
+
+──────────────────────────────
+↩️ *0* හෝ \`${p}menu\` යවා ප්‍රධාන මෙනුවට යන්න.
+💡 *Tap & Hold* කර ඕනෑම Command එකක් Copy කරගන්න.
+> © ${styledBotName} • 𝟐𝟒/𝟕 𝐄𝐍𝐆𝐈𝐍𝐄`;
 
     if (!useHtmlUi) {
       await this.reply(jid, msg, cleanCaption);
@@ -5229,34 +5279,50 @@ ${commandLines}
     this.classicMenuContext.set(jid, Date.now());
     this.addLog("INFO", `📱 [CLASSIC TEXT MENU] Delivering Clean Text Menu (${detectedDevice}) to ${senderNumber}`);
 
-    const masterMenu = `👑 *${botName.toUpperCase()} • OFFICIAL MASTER MENU* 👑
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ *Uptime:* ${this.formatUptime()} • 👑 *Plan:* ${plan}
-📱 *Device Mode:* ${detectedDevice.toUpperCase()} (Clean Text View)
-⌨️ *Prefix:* [ ${p} ] • 🇱🇰 *Language:* Sinhala / English
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📂 *CATEGORIES (අදාළ අංකය පමණක් Reply කරන්න):*
+    const userName = (msg?.pushName && String(msg.pushName).trim()) || this.getConnectedUserName() || "User";
+    const { dateStr, timeStr } = this.getSriLankaDateTime();
+    const styledBotName = this.toUnicodeBold(botName.toUpperCase());
 
-  *1.* 📥 *Downloads & Media*   (\`${p}song\`, \`${p}video\`, \`${p}tt\`, \`${p}fb\`)
-  *2.* 🤖 *AI Intelligence*     (\`${p}ai\`, \`${p}imagine\`, \`${p}translate\`)
-  *3.* 🎬 *Cinema & Movies*     (\`${p}film\`, \`${p}sub\`, \`${p}cineru\`)
-  *4.* 👥 *Group Admin*         (\`${p}tagall\`, \`${p}kick\`, \`${p}antilink\`)
-  *5.* 🎮 *Games & Fun*         (\`${p}quiz\`, \`${p}roll\`, \`${p}slot\`, \`${p}ttt\`)
-  *6.* 🎵 *Music & Audio*       (\`${p}play\`, \`${p}lyrics\`, \`${p}shazam\`)
-  *7.* 🛠️ *Text & Tool Box*     (\`${p}sticker\`, \`${p}ocr\`, \`${p}qr\`)
-  *8.* ⚙️ *System & Controls*   (\`${p}ping\`, \`${p}alive\`, \`${p}owner\`)
-  *9.* 🧮 *Utilities & Math*    (\`${p}calc\`, \`${p}weather\`, \`${p}currency\`)
- *10.* 🔎 *Search Tools*        (\`${p}ytsearch\`, \`${p}img\`, \`${p}wiki\`)
+    const masterMenu = `╭━━━━『 👑 ${styledBotName} 』━━━━╮
+│ 👋 *ආයුබෝවන්, ${userName}!*
+│ 📅 *Date:* ${dateStr}  •  ⏰ ${timeStr}
+│ ⚡ *Uptime:* ${this.formatUptime()}  •  💎 *Plan:* ${plan}
+│ 📱 *Mode:* ${detectedDevice.toUpperCase()} (Clean Text Edition)
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ *Quick Commands (කෙලින්ම භාවිතයට):*
-• \`${p}song <නම>\` — MP3 සින්දු බාගත කිරීම
-• \`${p}film <නම>\` — සිංහල Sub සමඟ චිත්‍රපට
-• \`${p}ai <ප්‍රශ්නය>\` — YASHI AI සහායක
+╭─── ✦ 📂 ${this.toUnicodeBold("COMMAND DIRECTORY")} ✦ ───╮
+│  _${this.toUnicodeBold("Reply")} with a number (*1–10*) to open:_
+│
+│  1️⃣ 📥 *Downloads & Media*
+│     └ \`${p}song\`, \`${p}video\`, \`${p}tt\`, \`${p}fb\`
+│  2️⃣ 🤖 *AI Intelligence*
+│     └ \`${p}ai\`, \`${p}imagine\`, \`${p}translate\`
+│  3️⃣ 🎬 *Cinema & Movies*
+│     └ \`${p}film\`, \`${p}sub\`, \`${p}cineru\`
+│  4️⃣ 👥 *Group Management*
+│     └ \`${p}tagall\`, \`${p}kick\`, \`${p}antilink\`
+│  5️⃣ 🎮 *Games & Fun*
+│     └ \`${p}quiz\`, \`${p}roll\`, \`${p}slot\`, \`${p}ttt\`
+│  6️⃣ 🎵 *Music & Audio*
+│     └ \`${p}play\`, \`${p}lyrics\`, \`${p}shazam\`
+│  7️⃣ 🛠️ *Tools & Stickers*
+│     └ \`${p}sticker\`, \`${p}ocr\`, \`${p}qr\`
+│  8️⃣ ⚙️ *System & Controls*
+│     └ \`${p}ping\`, \`${p}alive\`, \`${p}owner\`
+│  9️⃣ 🧮 *Utilities & Daily*
+│     └ \`${p}calc\`, \`${p}weather\`, \`${p}currency\`
+│  🔟 🔎 *Search Engine*
+│     └ \`${p}ytsearch\`, \`${p}img\`, \`${p}wiki\`
+╰─────────────────────────────╯
 
-💡 *Reply Tip:* *1* සිට *10* දක්වා අංකයක් යවා එම කොටසේ සියලු විධාන බලන්න.
-📢 *Official Channel:* ${WHATSAPP_CHANNEL_URL}
-> ⚡ *ＰＯＷＥＲＥＤ  ＢＹ   ＹＡＳＨＩ   ＨＡＬＬＳ*`;
+╭─── ✦ ⚡ ${this.toUnicodeBold("QUICK TIPS")} ✦ ───╮
+│ • *1–10* අංකය පමණක් Reply කර Category බලන්න.
+│ • \`${p}song <නම>\` / \`${p}film <නම>\` කෙලින්ම යවන්න.
+│ • මෙනුවට ආපසු ඒමට *0* හෝ \`${p}menu\` යවන්න.
+╰─────────────────────────────╯
+
+📢 *Channel:* ${WHATSAPP_CHANNEL_URL}
+> © ${styledBotName} • 𝟐𝟒/𝟕 𝐓𝐄𝐗𝐓 𝐄𝐃𝐈𝐓𝐈𝐎𝐍`;
 
     if (!useHtmlUi) {
       await this.reply(jid, msg, masterMenu);
@@ -8487,6 +8553,9 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
     brandName = "YASHI HALLS",
     orderInfo?: { orderId: string; serviceLabel: string; packageLabel: string; amountLkr: number }
   ): Promise<boolean> {
+    if (!this.isUiMenuSupported(msg, jid)) {
+      return false;
+    }
     const aoState = getAutoOrderState(this.userId);
     const acc = aoState.settings.paymentAccount;
     const bankName =
@@ -8618,6 +8687,25 @@ Applied filter: *${args||"Cyberpunk Glow"}* with contrast correction.`);break}}
           { id: "guild_welcome_menu", text: "🏠 Main Menu" },
         ],
       });
+      return;
+    }
+
+    if (!this.isUiMenuSupported(msg, jid)) {
+      const textOnlyPayment = [
+        `╭─── ✦ 💳 ${this.toUnicodeBold(`PAYMENT DETAILS • ${order.id}`)} ✦ ───╮`,
+        `│ ⚔️ *Service:* GUILD SERVICE (${qty} BOTS)`,
+        `│ 💰 *Amount:* LKR ${order.amountLkr.toLocaleString("en-US")}`,
+        `│`,
+        `│ 🏛️ *Bank:* ${bankName}`,
+        `│ 👤 *Account Name:* ${accountName}`,
+        `│ 💳 *Account Number:* \`${accountNumber}\``,
+        `│ 📱 *eZ Cash:* \`074 386 5934\``,
+        `│ 🔖 *Remark:* \`${order.id}\``,
+        `╰────────────────────────────╯`,
+        ``,
+        `📤 *ගෙවීම සිදු කර Payment Receipt (Image / PDF) එක මෙතනට එවන්න.*`,
+      ].join("\n");
+      await this.sendPlainTextStatus(jid, msg, textOnlyPayment);
       return;
     }
 

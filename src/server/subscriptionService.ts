@@ -90,13 +90,13 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_BANK_DETAILS: BankDetailsConfig = {
-  bankName: 'Commercial Bank of Ceylon',
-  accountName: 'YASHI HALLS Cloud Holdings',
-  accountNumber: '8001234567',
-  branchName: 'Colombo Main Branch',
-  swiftOrCode: 'CCEYLKLX',
+  bankName: 'NSB (National Savings Bank)',
+  accountName: 'A.M.Y.N Alahakoon',
+  accountNumber: '100156103618',
+  branchName: 'eZ Cash: 074 386 5934',
+  swiftOrCode: '',
   instructions:
-    'Transfer the exact monthly LKR package amount to the bank account above, enter your bank transaction reference number, and upload a clear screenshot of the payment receipt.',
+    'NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත නිවැරදි මුදල ගෙවා Payment Reference අංකය සමඟ Receipt (Screenshot / Photo) එක Upload කරන්න.',
 };
 
 const DEFAULT_PRICES: PackagePricesLkr = {
@@ -185,8 +185,17 @@ class SubscriptionService {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
+        const parsedBank = parsed.bankDetails || {};
+        const isLegacyPlaceholder =
+          !parsedBank.accountNumber ||
+          parsedBank.accountNumber === '8001234567' ||
+          parsedBank.accountNumber === '0000000000' ||
+          parsedBank.bankName === 'Commercial Bank of Ceylon' ||
+          parsedBank.accountName === 'YASHI HALLS Cloud Holdings';
         return {
-          bankDetails: { ...DEFAULT_BANK_DETAILS, ...(parsed.bankDetails || {}) },
+          bankDetails: isLegacyPlaceholder
+            ? { ...DEFAULT_BANK_DETAILS }
+            : { ...DEFAULT_BANK_DETAILS, ...parsedBank },
           packagePricesLkr: {
             mini: 0,
             pro: Number(parsed?.packagePricesLkr?.pro) > 0 ? Number(parsed.packagePricesLkr.pro) : 500,

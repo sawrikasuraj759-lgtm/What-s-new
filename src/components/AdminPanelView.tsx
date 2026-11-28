@@ -98,10 +98,10 @@ export const AdminPanelView: React.FC = () => {
   const [receiptLoadError, setReceiptLoadError] = useState<string | null>(null);
 
   // Bank Details & Monthly LKR Pricing Form
-  const [bankName, setBankName] = useState('Bank of Ceylon (BOC)');
-  const [accountName, setAccountName] = useState('YASHI HALLS');
-  const [accountNumber, setAccountNumber] = useState('0000000000');
-  const [branchName, setBranchName] = useState('Colombo Main Branch');
+  const [bankName, setBankName] = useState('NSB (National Savings Bank)');
+  const [accountName, setAccountName] = useState('A.M.Y.N Alahakoon');
+  const [accountNumber, setAccountNumber] = useState('100156103618');
+  const [branchName, setBranchName] = useState('eZ Cash: 074 386 5934');
   const [swiftOrCode, setSwiftOrCode] = useState('');
   const [bankInstructions, setBankInstructions] = useState('');
   const [proPriceLkr, setProPriceLkr] = useState<number>(500);

@@ -555,13 +555,13 @@ export const AutoOrderManagementView: React.FC<AutoOrderManagementViewProps> = (
                 setBots16Price(String(payload.settings.guildPricing.bots16 ?? 2600));
               }
               if (payload.settings.paymentAccount) {
-                setBankName(payload.settings.paymentAccount.bankName || 'Commercial Bank');
-                setAccountName(payload.settings.paymentAccount.accountName || 'YASHI HALLS');
-                setAccountNumber(payload.settings.paymentAccount.accountNumber || '');
-                setBranchName(payload.settings.paymentAccount.branchName || '');
+                setBankName(payload.settings.paymentAccount.bankName || 'NSB (National Savings Bank)');
+                setAccountName(payload.settings.paymentAccount.accountName || 'A.M.Y.N Alahakoon');
+                setAccountNumber(payload.settings.paymentAccount.accountNumber || '100156103618');
+                setBranchName(payload.settings.paymentAccount.branchName || 'eZ Cash: 074 386 5934');
                 setPaymentInstructions(
                   payload.settings.paymentAccount.instructions ||
-                    'Transfer the exact LKR amount and upload your payment slip (Image or PDF) directly in this chat.'
+                    'NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත නිවැරදි මුදල ගෙවා Payment Receipt (Photo / PDF) එක මෙතනට එවන්න.'
                 );
               }
               setPublicPortalBaseUrl(payload.settings.publicPortalBaseUrl || '');
@@ -907,10 +907,10 @@ export const AutoOrderManagementView: React.FC<AutoOrderManagementViewProps> = (
             bots16: Math.max(1, Number(bots16Price) || 2600),
           },
           paymentAccount: {
-            bankName: bankName.trim() || 'Commercial Bank',
-            accountName: accountName.trim() || 'YASHI HALLS',
-            accountNumber: accountNumber.trim(),
-            branchName: branchName.trim(),
+            bankName: bankName.trim() || 'NSB (National Savings Bank)',
+            accountName: accountName.trim() || 'A.M.Y.N Alahakoon',
+            accountNumber: accountNumber.trim() || '100156103618',
+            branchName: branchName.trim() || 'eZ Cash: 074 386 5934',
             instructions: paymentInstructions.trim(),
           },
         }),
@@ -1840,7 +1840,7 @@ export const AutoOrderManagementView: React.FC<AutoOrderManagementViewProps> = (
                     type="text"
                     value={bankName}
                     onChange={(e) => setBankName(e.target.value)}
-                    placeholder="e.g. Commercial Bank"
+                    placeholder="e.g. NSB (National Savings Bank)"
                     className="w-full bg-[#07050f] border border-purple-500/25 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
                   />
                 </div>
@@ -1850,7 +1850,7 @@ export const AutoOrderManagementView: React.FC<AutoOrderManagementViewProps> = (
                     type="text"
                     value={accountName}
                     onChange={(e) => setAccountName(e.target.value)}
-                    placeholder="e.g. YASHI HALLS"
+                    placeholder="e.g. A.M.Y.N Alahakoon"
                     className="w-full bg-[#07050f] border border-purple-500/25 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
                   />
                 </div>
@@ -1860,17 +1860,17 @@ export const AutoOrderManagementView: React.FC<AutoOrderManagementViewProps> = (
                     type="text"
                     value={accountNumber}
                     onChange={(e) => setAccountNumber(e.target.value)}
-                    placeholder="e.g. 8001234567"
+                    placeholder="e.g. 100156103618"
                     className="w-full bg-[#07050f] border border-purple-500/25 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-purple-400"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] text-slate-300 mb-1">Branch Name (Optional)</label>
+                  <label className="block text-[11px] text-slate-300 mb-1">eZ Cash / Branch (Optional)</label>
                   <input
                     type="text"
                     value={branchName}
                     onChange={(e) => setBranchName(e.target.value)}
-                    placeholder="e.g. Colombo Main"
+                    placeholder="e.g. eZ Cash: 074 386 5934"
                     className="w-full bg-[#07050f] border border-purple-500/25 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
                   />
                 </div>

@@ -1,11 +1,11 @@
 {
   "bankDetails": {
-    "bankName": "Commercial Bank of Ceylon",
-    "accountName": "YASHI HALLS Cloud Holdings",
-    "accountNumber": "8001234567",
-    "branchName": "Colombo Main Branch",
-    "swiftOrCode": "CCEYLKLX",
-    "instructions": "Transfer the exact monthly LKR package amount to the bank account above, enter your bank transaction reference number, and upload a clear screenshot of the payment receipt."
+    "bankName": "NSB (National Savings Bank)",
+    "accountName": "A.M.Y.N Alahakoon",
+    "accountNumber": "100156103618",
+    "branchName": "eZ Cash: 074 386 5934",
+    "swiftOrCode": "",
+    "instructions": "NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත නිවැරදි මුදල ගෙවා Payment Reference අංකය සමඟ Receipt (Screenshot / Photo) එක Upload කරන්න."
   },
   "packagePricesLkr": {
     "mini": 0,
@@ -16,7 +16,7 @@
     "user_sawrikasuraj759_gmail_com": {
       "userId": "user_sawrikasuraj759_gmail_com",
       "email": "sawrikasuraj759@gmail.com",
-      "username": "Admin",
+      "username": "Sawrika Suraj",
       "plan": "mini",
       "status": "FREE",
       "activatedAt": null,
@@ -25,7 +25,7 @@
       "paymentReference": null,
       "paymentRequestId": null,
       "remindedMilestones": [],
-      "updatedAt": "2026-11-25T14:45:01.790Z"
+      "updatedAt": "2026-11-28T10:27:04.533Z"
     }
   },
   "paymentRequests": [],

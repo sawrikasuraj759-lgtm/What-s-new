@@ -26,13 +26,32 @@ export const CoinPurchaseModal: React.FC = () => {
     selectedCoinPack, 
     submitPurchaseRequest,
     user,
-    adminWhatsappNumber
+    adminWhatsappNumber,
+    billingConfig,
+    addToast
   } = useApp();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdRequest, setCreatedRequest] = useState<PurchaseRequest | null>(null);
   const [whatsappChatUrl, setWhatsappChatUrl] = useState<string | null>(null);
   const [copiedRef, setCopiedRef] = useState(false);
+  const [copiedPayVal, setCopiedPayVal] = useState<'nsb' | 'ez' | null>(null);
+
+  const bankName = billingConfig?.bankDetails?.bankName || 'NSB (National Savings Bank)';
+  const accountName = billingConfig?.bankDetails?.accountName || 'A.M.Y.N Alahakoon';
+  const accountNumber = billingConfig?.bankDetails?.accountNumber || '100156103618';
+  const branchText = billingConfig?.bankDetails?.branchName || 'eZ Cash: 074 386 5934';
+  const ezMatch = String(branchText).match(/0\d{2}[\s-]?\d{3}[\s-]?\d{4}/);
+  const ezCashDisplay = ezMatch ? ezMatch[0] : '074 386 5934';
+  const ezCashRaw = ezCashDisplay.replace(/\D/g, '') || '0743865934';
+
+  const handleCopyPayValue = (val: string, kind: 'nsb' | 'ez', label: string) => {
+    soundFX.playClick();
+    navigator.clipboard.writeText(val);
+    setCopiedPayVal(kind);
+    addToast(`${label} copied`, 'success');
+    setTimeout(() => setCopiedPayVal(null), 2000);
+  };
 
   if (!openCoinModal || !selectedCoinPack) return null;
 
@@ -153,7 +172,7 @@ export const CoinPurchaseModal: React.FC = () => {
               <ol className="list-decimal list-inside space-y-1 text-slate-400 leading-relaxed text-[11px] sm:text-xs">
                 <li>පහත <strong className="text-cyan-400">Open Admin WhatsApp Chat</strong> බොත්තම ඔබන්න.</li>
                 <li>Admin Hotline (<strong className="text-white font-mono">{adminWhatsappNumber || '0740712934'}</strong>) වෙත Reference ID එක සමඟ පණිවිඩය යවන්න.</li>
-                <li>Bank Transfer / FriMi / Genie රිසිට්පත යවා Admin හට තහවුරු කරන්න.</li>
+                <li><strong className="text-white">{bankName}:</strong> <span className="font-mono text-cyan-300">{accountNumber}</span> ({accountName}) හෝ <strong className="text-amber-300">Dialog eZ Cash:</strong> <span className="font-mono text-amber-300">{ezCashDisplay}</span> වෙත මුදල ගෙවා රිසිට්පත යවන්න.</li>
                 <li>Admin විසින් Request එක Approve කළ විගස <strong className="text-emerald-400">+{selectedCoinPack.coins} Coins</strong> ඔබගේ Wallet එකට එකතු වේ!</li>
               </ol>
             </div>
@@ -217,7 +236,46 @@ export const CoinPurchaseModal: React.FC = () => {
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Payment Method:</span>
-                <span className="text-cyan-300 font-medium">Bank Transfer / FriMi / Genie / Card</span>
+                <span className="text-cyan-300 font-medium">NSB Bank Transfer / Dialog eZ Cash</span>
+              </div>
+            </div>
+
+            {/* Direct NSB & eZ Cash Payment Details */}
+            <div className="p-3.5 rounded-2xl bg-[#07111e] border border-amber-500/30 space-y-2 text-xs">
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5" />
+                  <span>{bankName}</span>
+                </span>
+                <span className="text-[11px] text-slate-400">{accountName}</span>
+              </div>
+              <div className="flex items-center justify-between bg-[#0b1626] rounded-xl px-3 py-2 border border-white/5">
+                <div>
+                  <div className="text-[10px] text-slate-400 uppercase">NSB Account Number</div>
+                  <div className="font-mono font-bold text-white text-sm">{accountNumber}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyPayValue(accountNumber, 'nsb', 'NSB Account Number')}
+                  className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-cyan-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  {copiedPayVal === 'nsb' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>Copy</span>
+                </button>
+              </div>
+              <div className="flex items-center justify-between bg-[#0b1626] rounded-xl px-3 py-2 border border-white/5">
+                <div>
+                  <div className="text-[10px] text-slate-400 uppercase">Dialog eZ Cash</div>
+                  <div className="font-mono font-bold text-amber-300 text-sm">{ezCashDisplay}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyPayValue(ezCashRaw, 'ez', 'eZ Cash Number')}
+                  className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-amber-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  {copiedPayVal === 'ez' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>Copy</span>
+                </button>
               </div>
             </div>
 

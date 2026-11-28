@@ -66,7 +66,7 @@ export interface BusinessPayStoreState {
 }
 
 const DEFAULT_BANK_DETAILS =
-  '🏦 Bank / eZ Cash / FriMi Transfer කළ පසු ඔබගේ Payment එක YASHI HALLS Pay මඟින් ස්වයංක්‍රීයව තහවුරු වේ.';
+  '🏦 NSB: 100156103618 (A.M.Y.N Alahakoon) • 📱 eZ Cash: 074 386 5934 — ගෙවීම සිදු කළ පසු Payment Receipt එක එවන්න.';
 
 function sanitizeTenantId(userId: string): string {
   const clean = (userId || 'primary__business').replace(/[^a-zA-Z0-9_-]/g, '_');

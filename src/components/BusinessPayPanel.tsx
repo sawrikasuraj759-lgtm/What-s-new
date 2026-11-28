@@ -683,7 +683,7 @@ export const BusinessPayPanel: React.FC<BusinessPayPanelProps> = ({
               rows={2}
               value={bankDetailsText}
               onChange={(e) => setBankDetailsText(e.target.value)}
-              placeholder="e.g. Commercial Bank: 8001234567 • eZ Cash: 0740712934"
+              placeholder="e.g. NSB: 100156103618 (A.M.Y.N Alahakoon) • eZ Cash: 074 386 5934"
               className="w-full bg-[#080d18] border border-[#22314d] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
             />
           </div>

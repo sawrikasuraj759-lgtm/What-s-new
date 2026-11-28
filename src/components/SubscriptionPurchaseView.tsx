@@ -28,13 +28,13 @@ interface SubscriptionPurchaseViewProps {
 }
 
 const DEFAULT_BANK = {
-  bankName: 'Bank of Ceylon (BOC)',
-  accountName: 'YASHI HALLS',
-  accountNumber: '0000000000',
-  branchName: 'Colombo Main Branch',
+  bankName: 'NSB (National Savings Bank)',
+  accountName: 'A.M.Y.N Alahakoon',
+  accountNumber: '100156103618',
+  branchName: 'eZ Cash: 074 386 5934',
   swiftOrCode: '',
   instructions:
-    'Transfer the exact LKR amount for your chosen monthly package, upload a clear screenshot of the transfer receipt, and enter the transaction reference.',
+    'NSB (100156103618 - A.M.Y.N Alahakoon) හෝ Dialog eZ Cash (074 386 5934) වෙත නිවැරදි මුදල ගෙවා Payment Reference අංකය සමඟ Receipt (Screenshot / Photo) එක Upload කරන්න.',
 };
 
 export const SubscriptionPurchaseView: React.FC<SubscriptionPurchaseViewProps> = ({
@@ -71,6 +71,7 @@ export const SubscriptionPurchaseView: React.FC<SubscriptionPurchaseViewProps> =
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [copiedAccount, setCopiedAccount] = useState(false);
+  const [copiedEzCash, setCopiedEzCash] = useState(false);
 
   // Authenticated Blob Receipt Modal
   const [viewingRequest, setViewingRequest] = useState<ManualPaymentRequestItem | null>(null);
@@ -110,12 +111,29 @@ export const SubscriptionPurchaseView: React.FC<SubscriptionPurchaseViewProps> =
     checkoutFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const ezCashMatch = String(bankDetails.branchName || '').match(/0\d{2}[\s-]?\d{3}[\s-]?\d{4}/);
+  const ezCashDisplay = ezCashMatch
+    ? ezCashMatch[0]
+    : !bankDetails.branchName || /ez\s*cash/i.test(bankDetails.branchName)
+      ? '074 386 5934'
+      : '';
+  const ezCashRaw = ezCashDisplay.replace(/\D/g, '');
+
   const handleCopyAccount = () => {
     soundFX.playClick();
     navigator.clipboard.writeText(bankDetails.accountNumber || '');
     setCopiedAccount(true);
     addToast('Bank account number copied', 'success');
     setTimeout(() => setCopiedAccount(false), 2000);
+  };
+
+  const handleCopyEzCash = () => {
+    if (!ezCashRaw) return;
+    soundFX.playClick();
+    navigator.clipboard.writeText(ezCashRaw);
+    setCopiedEzCash(true);
+    addToast('Dialog eZ Cash number copied', 'success');
+    setTimeout(() => setCopiedEzCash(false), 2000);
   };
 
   const handleReceiptFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -587,6 +605,14 @@ export const SubscriptionPurchaseView: React.FC<SubscriptionPurchaseViewProps> =
             </div>
           </div>
 
+          <div className="rounded-xl overflow-hidden border border-white/10 bg-[#050a14]">
+            <img
+              src="/assets/aistudio/IMG-20261128-WA0036_3f07aefc.jpg"
+              alt="Dialog eZ Cash 074 386 5934 and NSB 100156103618 A.M.Y.N Alahakoon"
+              className="w-full h-auto object-cover scale-[1.06]"
+            />
+          </div>
+
           <dl className="space-y-3 text-xs">
             <div className="flex items-center justify-between gap-2 py-2 border-b border-white/5">
               <dt className="text-slate-400">Bank Name</dt>
@@ -614,10 +640,31 @@ export const SubscriptionPurchaseView: React.FC<SubscriptionPurchaseViewProps> =
                 </button>
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-2 py-2 border-b border-white/5">
-              <dt className="text-slate-400">Branch</dt>
-              <dd className="font-semibold text-white text-right">{bankDetails.branchName}</dd>
-            </div>
+            {ezCashDisplay ? (
+              <div className="flex items-center justify-between gap-2 py-2 border-b border-white/5">
+                <dt className="text-slate-400">Dialog eZ Cash</dt>
+                <dd className="flex items-center gap-2 font-mono font-bold text-amber-300">
+                  <span>{ezCashDisplay}</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyEzCash}
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 cursor-pointer"
+                    title="Copy eZ Cash Number"
+                  >
+                    {copiedEzCash ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </dd>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 py-2 border-b border-white/5">
+                <dt className="text-slate-400">Branch / Wallet</dt>
+                <dd className="font-semibold text-white text-right">{bankDetails.branchName}</dd>
+              </div>
+            )}
             {bankDetails.swiftOrCode && (
               <div className="flex items-center justify-between gap-2 py-2 border-b border-white/5">
                 <dt className="text-slate-400">SWIFT / Bank Code</dt>
